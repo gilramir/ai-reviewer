@@ -134,6 +134,10 @@ and **resumes the same conversation on the new model**, so switching to Sonnet
 for a batch of small edits and back to Opus for a hard question costs nothing
 that was already said.
 
+The choice is remembered — it goes into `.ai-reviewer/state.json` when you make
+it, so it survives a restart. `--model` on the command line is the more recent
+decision and outranks it, and then becomes the remembered one.
+
 ## Security notes
 
 The threat model is a trusted LAN, but two things are handled properly because

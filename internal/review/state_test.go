@@ -186,3 +186,83 @@ func TestSaveAndLoadRoundTrip(t *testing.T) {
 		t.Errorf("anchor = %+v", threads[0].Anchor)
 	}
 }
+
+// A model chosen in the browser is a decision about this review, not about this
+// process, so it has to outlive the daemon that took it.
+func TestTheChosenModelSurvivesARestart(t *testing.T) {
+	root := t.TempDir()
+
+	first := newReview(t, root)
+	if err := first.SetModel("sonnet"); err != nil {
+		t.Fatal(err)
+	}
+	if got := first.Settings().Model; got != "sonnet" {
+		t.Fatalf("model = %q after choosing sonnet", got)
+	}
+	// Written when the choice is made, not at the end of some later turn.
+	if !strings.Contains(readState(t, root), `"model": "sonnet"`) {
+		t.Error("the choice reached state.json only after a further save")
+	}
+
+	restarted := newReview(t, root)
+	if got := restarted.Settings().Model; got != "sonnet" {
+		t.Errorf("model = %q after a restart, want sonnet", got)
+	}
+}
+
+// --model on the command line is the more recent decision and outranks the
+// stored one; the stored value then follows it, rather than lying in wait.
+func TestAnExplicitModelFlagOutranksTheStoredOne(t *testing.T) {
+	root := t.TempDir()
+
+	first := newReview(t, root)
+	if err := first.SetModel("sonnet"); err != nil {
+		t.Fatal(err)
+	}
+
+	flagged, err := New(Options{Root: root, Model: "opus"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = flagged.Close() })
+
+	if got := flagged.Settings().Model; got != "opus" {
+		t.Errorf("model = %q, want the flag's opus", got)
+	}
+	if err := flagged.save(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(readState(t, root), `"model": "opus"`) {
+		t.Error("the stored model did not follow the flag")
+	}
+}
+
+// Choosing the default means asking for no model at all, which is a real
+// choice and must not read back as "sonnet, still".
+func TestChoosingTheDefaultClearsTheStoredModel(t *testing.T) {
+	root := t.TempDir()
+
+	first := newReview(t, root)
+	if err := first.SetModel("haiku"); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.SetModel(""); err != nil {
+		t.Fatal(err)
+	}
+
+	if strings.Contains(readState(t, root), `"model"`) {
+		t.Errorf("state.json still names a model:\n%s", readState(t, root))
+	}
+	if got := newReview(t, root).Settings().Model; got != "" {
+		t.Errorf("model = %q after choosing the default, want empty", got)
+	}
+}
+
+func readState(t *testing.T, root string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(root, ".ai-reviewer", "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}

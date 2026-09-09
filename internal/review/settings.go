@@ -109,7 +109,10 @@ func (r *Review) SetModel(model string) error {
 	r.mu.Unlock()
 
 	r.PublishSettings()
-	return nil
+
+	// Written now rather than at the end of the next turn: the choice should
+	// survive a restart that happens before the reviewer's next comment.
+	return r.save()
 }
 
 // noteTurnCost records what a finished turn cost and which model ran it.

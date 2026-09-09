@@ -122,8 +122,15 @@ func New(opts Options) (*Review, error) {
 
 	r.cliVersion = claudeVersion(opts.ClaudeBinary)
 
-	if err := r.load(); err != nil {
+	state, err := r.load()
+	if err != nil {
 		return nil, err
+	}
+
+	// A model chosen in the browser is remembered across restarts, but --model
+	// on this run's command line is the more recent decision and wins.
+	if opts.Model == "" && state.Model != "" {
+		r.procs.SetModel(state.Model)
 	}
 	return r, nil
 }
@@ -531,7 +538,10 @@ func (r *Review) reanchor(docPath string, src string) {
 // --- persistence ------------------------------------------------------------
 
 type persisted struct {
-	Branch   string            `json:"branch"`
+	Branch string `json:"branch"`
+	// Model is the choice made in the browser, which outlives the process that
+	// ran it. Absent means no choice was made and the CLI's own default stands.
+	Model    string            `json:"model,omitempty"`
 	Sessions map[string]string `json:"sessions"`
 	Threads  []*Thread         `json:"threads"`
 }
@@ -557,14 +567,16 @@ func (r *Review) statePath() string {
 	return filepath.Join(r.root, ".ai-reviewer", "state.json")
 }
 
-func (r *Review) load() error {
+// load restores the saved state and returns it, so New can apply the parts that
+// belong to something other than the Review itself.
+func (r *Review) load() (persisted, error) {
 	path := r.statePath()
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
-		return nil
+		return persisted{}, nil
 	}
 	if err != nil {
-		return err
+		return persisted{}, err
 	}
 
 	var state persisted
@@ -579,13 +591,13 @@ func (r *Review) load() error {
 		if moveErr != nil {
 			// Nothing has been lost yet, and continuing would overwrite the
 			// file at the next save. Refuse to start instead.
-			return fmt.Errorf("%s is unreadable (%v) and could not be moved aside: %w", path, err, moveErr)
+			return persisted{}, fmt.Errorf("%s is unreadable (%v) and could not be moved aside: %w", path, err, moveErr)
 		}
 		r.notice(fmt.Sprintf(
 			"%s could not be read (%v), so no comment threads were loaded. "+
 				"The file was kept as %s.",
 			path, err, filepath.Base(kept)))
-		return nil
+		return persisted{}, nil
 	}
 
 	r.mu.Lock()
@@ -610,7 +622,7 @@ func (r *Review) load() error {
 		r.notices = append(r.notices, fmt.Sprintf(
 			"%d thread(s) in %s had no id and were not loaded.", skipped, filepath.Base(path)))
 	}
-	return nil
+	return state, nil
 }
 
 // quarantine moves a state file aside and reports where it went. The timestamp
@@ -644,8 +656,16 @@ func (r *Review) Notices() []string {
 }
 
 func (r *Review) save() error {
+	// Read outside the lock: the manager has its own, and nothing here needs
+	// the two held together.
+	model := r.procs.Config().Model
+
 	r.mu.Lock()
-	state := persisted{Branch: r.branch, Sessions: map[string]string{}}
+	state := persisted{
+		Branch:   r.branch,
+		Model:    model,
+		Sessions: map[string]string{},
+	}
 	for k, v := range r.sessions {
 		state.Sessions[k] = v
 	}
