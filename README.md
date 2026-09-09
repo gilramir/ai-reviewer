@@ -101,6 +101,11 @@ ai-reviewer serve --root ./docs --listen 0.0.0.0:8080
 The password is four words rather than 48 hex characters because you read it off
 one screen and type it into another.
 
+The CLI is built on [`gilramir/argparse`](https://github.com/gilramir/argparse):
+`ai-reviewer --help` lists the subcommands, `ai-reviewer serve --help` lists the
+flags with their defaults, and a bare `ai-reviewer` prints the help and exits
+non-zero.
+
 For a password that survives restarts, `ai-reviewer password` stores a PBKDF2
 digest in `~/.config/ai-reviewer/config.json`. The plaintext is never written.
 

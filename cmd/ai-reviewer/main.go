@@ -6,7 +6,6 @@ import (
 	"bufio"
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"net/http"
 	"os"
@@ -17,102 +16,170 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/gilramir/argparse/v2"
+	"golang.org/x/term"
+
 	"github.com/gilramir/ai-reviewer/internal/config"
 	"github.com/gilramir/ai-reviewer/internal/review"
 	"github.com/gilramir/ai-reviewer/internal/server"
-	"golang.org/x/term"
 )
 
+// version is reported by --version.
+const version = "ai-reviewer 0.1.0"
+
+// serveOptions holds the flags for the serve subcommand. argparse fills these
+// in by deriving each field name from its switch, so --max-budget-usd lands in
+// MaxBudgetUsd; the parser fails at startup if a switch has no matching field.
+type serveOptions struct {
+	Root         string
+	Listen       string
+	Branch       string
+	NoAuth       bool
+	Model        string
+	Claude       string
+	MaxBudgetUsd float64
+	IdleTimeout  time.Duration
+	MaxLive      int
+}
+
+// passwordOptions has no flags of its own, but argparse wants a value struct
+// for every command.
+type passwordOptions struct{}
+
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "password" {
-		if err := setPassword(); err != nil {
-			fail(err)
-		}
-		return
-	}
+	ap := argparse.New(&argparse.Command{
+		Name:        "ai-reviewer",
+		Description: "Review Markdown documents in a browser, with Claude Code editing them.",
+		Epilog: `Each document under --root gets its own long-lived Claude Code process, so
+follow-up comments on the same file stay in one conversation. Every turn that
+changes a file is committed to the task branch.
 
-	args := os.Args[1:]
-	if len(args) > 0 && args[0] == "serve" {
-		args = args[1:]
-	}
-	if err := serve(args); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		fail(err)
-	}
+Authentication is on by default. --no-auth is refused unless --listen is a
+loopback address, since that combination would otherwise publish the documents
+to the network without a word.`,
+	})
+	ap.Version = version
+
+	addServeCommand(ap)
+	addPasswordCommand(ap)
+
+	// With no subcommand the root has no Function, so argparse prints the help
+	// and exits non-zero, which is the behaviour we want for a bare invocation.
+	ap.ParseAndExit()
 }
 
-func fail(err error) {
-	fmt.Fprintln(os.Stderr, "ai-reviewer:", err)
-	os.Exit(1)
+func addServeCommand(ap *argparse.ArgumentParser) {
+	opts := &serveOptions{
+		Root:        ".",
+		Listen:      "127.0.0.1:8080",
+		Claude:      "claude",
+		IdleTimeout: 30 * time.Minute,
+		MaxLive:     6,
+	}
+
+	cmd := ap.New(&argparse.Command{
+		Name:        "serve",
+		Description: "Serve the documents under --root for review",
+		Function:    runServe,
+		Values:      opts,
+	})
+
+	cmd.Add(&argparse.Argument{
+		Switches: []string{"--root"},
+		MetaVar:  "DIR",
+		Help:     "Directory of documents to review",
+	})
+	cmd.Add(&argparse.Argument{
+		Switches: []string{"--listen"},
+		MetaVar:  "ADDR",
+		Help:     "Address to bind; use 0.0.0.0:8080 to reach it from the LAN",
+	})
+	cmd.Add(&argparse.Argument{
+		Switches: []string{"--branch"},
+		MetaVar:  "NAME",
+		Help:     "Task branch for review commits; prompted for if omitted",
+	})
+	cmd.Add(&argparse.Argument{
+		Switches: []string{"--no-auth"},
+		Help:     "Serve without a password; refused unless --listen is loopback",
+	})
+	cmd.Add(&argparse.Argument{
+		Switches: []string{"--model"},
+		MetaVar:  "NAME",
+		Help:     "Model alias or name passed to claude",
+	})
+	cmd.Add(&argparse.Argument{
+		Switches: []string{"--claude"},
+		MetaVar:  "PATH",
+		Help:     "Path to the claude executable",
+	})
+	cmd.Add(&argparse.Argument{
+		Switches: []string{"--max-budget-usd"},
+		MetaVar:  "AMOUNT",
+		Help:     "Per-process spend cap; 0 for none",
+	})
+	cmd.Add(&argparse.Argument{
+		Switches: []string{"--idle-timeout"},
+		MetaVar:  "#(h|m|s)",
+		Help:     "Stop a document's claude process after this long idle",
+	})
+	cmd.Add(&argparse.Argument{
+		Switches: []string{"--max-live"},
+		MetaVar:  "N",
+		Help:     "Maximum concurrent claude processes",
+	})
 }
 
-func serve(args []string) error {
-	fs := flag.NewFlagSet("ai-reviewer", flag.ExitOnError)
+func addPasswordCommand(ap *argparse.ArgumentParser) {
+	ap.New(&argparse.Command{
+		Name:        "password",
+		Description: "Store a password that survives restarts",
+		Function:    runPassword,
+		Values:      &passwordOptions{},
+	})
+}
 
-	root := fs.String("root", ".", "directory of documents to review")
-	listen := fs.String("listen", "127.0.0.1:8080", "address to bind; use 0.0.0.0:8080 to reach it from the LAN")
-	branch := fs.String("branch", "", "task branch for review commits (prompted for if omitted)")
-	noAuth := fs.Bool("no-auth", false, "serve without a password; refused unless the bind address is loopback")
-	model := fs.String("model", "", "model alias or name passed to claude")
-	claudeBin := fs.String("claude", "claude", "path to the claude executable")
-	budget := fs.Float64("max-budget-usd", 0, "per-process spend cap, 0 for none")
-	idle := fs.Duration("idle-timeout", 30*time.Minute, "stop a document's claude process after this long idle")
-	maxLive := fs.Int("max-live", 6, "maximum concurrent claude processes")
-
-	fs.Usage = func() {
-		fmt.Fprint(os.Stderr, `usage: ai-reviewer [serve] [flags]
-       ai-reviewer password
-
-Serves the Markdown files under -root for review in a browser. Each document
-gets its own long-lived Claude Code process; each turn that changes a file is
-committed to the task branch.
-
-flags:
-`)
-		fs.PrintDefaults()
-	}
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
+func runServe(_ *argparse.Command, values argparse.Values) error {
+	opts := values.(*serveOptions)
 
 	// Authentication is the default. Disabling it is only coherent when nothing
 	// off this machine can reach the port, and getting that combination wrong
 	// silently publishes the documents to the network.
-	if *noAuth && !server.IsLoopback(*listen) {
-		return fmt.Errorf("-no-auth requires a loopback address; %q is reachable from the network", *listen)
+	if opts.NoAuth && !server.IsLoopback(opts.Listen) {
+		return fmt.Errorf("--no-auth requires a loopback address; %q is reachable from the network", opts.Listen)
 	}
 
-	if _, err := exec.LookPath(*claudeBin); err != nil {
-		return fmt.Errorf("cannot find the claude executable %q: %w", *claudeBin, err)
+	if _, err := exec.LookPath(opts.Claude); err != nil {
+		return fmt.Errorf("cannot find the claude executable %q: %w", opts.Claude, err)
 	}
 
-	branchName, err := resolveBranch(*root, *branch)
+	branchName, err := resolveBranch(opts.Root, opts.Branch)
 	if err != nil {
 		return err
 	}
 
 	rev, err := review.New(review.Options{
-		Root:         *root,
+		Root:         opts.Root,
 		Branch:       branchName,
-		Model:        *model,
-		ClaudeBinary: *claudeBin,
-		MaxBudgetUSD: *budget,
-		IdleTimeout:  *idle,
-		MaxLive:      *maxLive,
+		Model:        opts.Model,
+		ClaudeBinary: opts.Claude,
+		MaxBudgetUSD: opts.MaxBudgetUsd,
+		IdleTimeout:  opts.IdleTimeout,
+		MaxLive:      opts.MaxLive,
 	})
 	if err != nil {
 		return err
 	}
 	defer rev.Close()
 
-	auth, secret, err := buildAuth(*noAuth)
+	auth, secret, err := buildAuth(opts.NoAuth)
 	if err != nil {
 		return err
 	}
 
-	handler := server.New(server.Options{Review: rev, Auth: auth})
 	httpServer := &http.Server{
-		Addr:              *listen,
-		Handler:           handler,
+		Addr:              opts.Listen,
+		Handler:           server.New(server.Options{Review: rev, Auth: auth}),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -125,7 +192,7 @@ flags:
 		}
 	}()
 
-	announce(*listen, branchName, rev.Root(), secret, auth == nil)
+	announce(opts.Listen, branchName, rev.Root(), secret, auth == nil)
 
 	go func() {
 		<-ctx.Done()
@@ -134,7 +201,12 @@ flags:
 		_ = httpServer.Shutdown(shutdown)
 	}()
 
-	return httpServer.ListenAndServe()
+	// A clean shutdown is not a failure, and argparse would otherwise print
+	// ErrServerClosed and exit non-zero.
+	if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	return nil
 }
 
 // buildAuth chooses between a stored password and a freshly generated secret.
@@ -248,9 +320,9 @@ func slug(s string) string {
 	return strings.Trim(b.String(), "-")
 }
 
-// setPassword stores a password that survives restarts, in the style of
+// runPassword stores a password that survives restarts, in the style of
 // `jupyter notebook password`.
-func setPassword() error {
+func runPassword(_ *argparse.Command, _ argparse.Values) error {
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
 		return errors.New("`ai-reviewer password` needs a terminal")
 	}
