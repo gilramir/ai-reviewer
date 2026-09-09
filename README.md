@@ -8,7 +8,11 @@ change that lands is a commit on a task branch, so a review session leaves a
 diff you can read and undo.
 
 It drives the **Claude Code CLI**, not the API. There is no API key to manage:
-if `claude` works in your terminal, it works here.
+if `claude` works in your terminal, it works here. How that works — `claude -p`
+with `--input-format stream-json` is a persistent session over pipes, not a
+one-shot command — is written up in
+**[docs/backendClaude.md](docs/backendClaude.md)**, for anyone who wants to drive
+Claude Code from their own program.
 
 ## How it fits together
 
@@ -59,7 +63,10 @@ run `make`.
 a separate tool from the compiler — `gren format` is not a compiler subcommand —
 and it needs Node >= 20, which `devbox.json` supplies as `nodejs@22`. Both
 `make check` and `make fmt` skip it with a note when it is absent, so a machine
-without Node can still build, test and run everything.
+without Node can still build and run everything.
+
+Node also runs the Gren tests in `web/tests`, which `make test` skips the same
+way when it is absent.
 
 Note that `--diff` exits 0 whether or not it finds differences, so `make check`
 gates on the output being empty rather than on the exit status.
@@ -129,7 +136,16 @@ getting them wrong is quiet:
 
 Claude runs with `--tools Read,Edit,Write,Grep,Glob` and `--strict-mcp-config`:
 no Bash, and none of your personal MCP servers. The daemon is the only writer of
-git history.
+git history. The reasoning behind each flag is in
+[docs/backendClaude.md](docs/backendClaude.md).
+
+**Claude runs at the repository root, not at `--root`.** Its working directory is
+its file-permission boundary, so a review rooted at `doc/` would leave it unable
+to read the `../src` its own documents link to. The cost is that the model can
+read and edit anything in the repository, not only the documents under review —
+the same reach it has when you run `claude` there yourself. What the *browser*
+can open is unchanged: still `--root` and below, still refusing paths that escape
+it.
 
 ## Known issues
 
@@ -154,16 +170,19 @@ cmd/ai-reviewer/      CLI: serve, password
 internal/mdast/       goldmark -> JSON AST with source spans
 internal/review/      documents, threads, anchoring, turn lifecycle
 internal/claudeproc/  the long-lived claude process, one per document
+                      (protocol write-up: docs/backendClaude.md)
 internal/gitstore/    one commit per turn; snapshots outside a repo
 internal/server/      HTTP, auth, WebSocket
-web/src/              Gren: Doc (decoder), Protocol (wire), Main (app)
+web/src/              Gren: Doc (decoder), Protocol (wire), Marks (anchoring), Main (app)
 web/static/           index.html, ports.js, style.css
+web/tests/            Gren tests for Marks, run under gren-unit-node
 ```
 
 ## Tests
 
 ```sh
 make test                                          # stubbed, free, fast
+make web-test ARGS=-v                              # just the Gren tests, verbose
 AI_REVIEWER_LIVE=1 go test ./internal/server \
   -run TestLiveClaude -v                           # against the real CLI
 ```
@@ -172,4 +191,23 @@ AI_REVIEWER_LIVE=1 go test ./internal/server \
 the whole pipeline is testable without a model in the loop. The live test is
 worth running when the CLI updates: the stub can only prove the daemon speaks
 the protocol it was written against, not that it is still the protocol the CLI
-emits.
+emits. The protocol itself is documented in
+[docs/backendClaude.md](docs/backendClaude.md).
+
+### The Gren side
+
+`web/tests` is a node application built over the same `web/src`, so the browser
+code can be tested without a browser. That works for anything importing only
+`gren-lang/core`, which is why the anchoring logic lives in `Marks` rather than
+inside the view: a module that imports `Html` cannot be compiled for node at
+all. The main module there is `Check` rather than `Main` only because `../src` is
+on the source path and already has one.
+
+The suite is the record of every anchoring bug found so far — a quote whose line
+wrap is a newline where the document's is a space, a passage inside `**[link]()**`,
+a highlight that has to cross into a code span — plus the one limit that is not
+fixed: a selection spanning two blocks files its comment but is not highlighted.
+
+```sh
+cd web/tests && gren make Check --output=app && node app --help
+```
