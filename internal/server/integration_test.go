@@ -682,3 +682,83 @@ func TestReviewOfASubdirectoryStillCommits(t *testing.T) {
 		t.Errorf("commit body does not name the document as the repository sees it:\n%s", message)
 	}
 }
+
+// The settings the reviewer can see arrive unprompted, so opening the page is
+// enough to answer "which model am I talking to?".
+func TestSettingsArriveOnConnect(t *testing.T) {
+	rev, _ := newReview(t)
+
+	const secret = "test-secret-phrase"
+	ts := httptest.NewServer(New(Options{Review: rev, Auth: NewTokenAuth(secret)}))
+	defer ts.Close()
+
+	conn := dialWS(t, ts, login(t, ts, secret), ts.URL)
+
+	frame := waitFor(t, conn, "settings")
+	settings, _ := frame["settings"].(map[string]any)
+	if settings == nil {
+		t.Fatalf("settings frame carries nothing: %v", frame)
+	}
+
+	if mode, _ := settings["permissionMode"].(string); mode != "acceptEdits" {
+		t.Errorf("permissionMode = %v", settings["permissionMode"])
+	}
+	tools, _ := settings["tools"].([]any)
+	if len(tools) == 0 || tools[0] != "Read" {
+		t.Errorf("tools = %v", settings["tools"])
+	}
+	if ws, _ := settings["workspace"].(string); ws != rev.WorkRoot() {
+		t.Errorf("workspace = %v, want %q", settings["workspace"], rev.WorkRoot())
+	}
+	choices, _ := settings["modelChoices"].([]any)
+	if len(choices) < 2 {
+		t.Errorf("modelChoices = %v", settings["modelChoices"])
+	}
+}
+
+// Choosing a model has to come back as a new settings frame: the panel shows
+// what the daemon confirms, not what the select element was set to.
+func TestChangingTheModelIsConfirmed(t *testing.T) {
+	rev, _ := newReview(t)
+
+	const secret = "test-secret-phrase"
+	ts := httptest.NewServer(New(Options{Review: rev, Auth: NewTokenAuth(secret)}))
+	defer ts.Close()
+
+	conn := dialWS(t, ts, login(t, ts, secret), ts.URL)
+	waitFor(t, conn, "settings")
+
+	send(t, conn, map[string]any{"type": "setModel", "model": "sonnet"})
+
+	for range 5 {
+		frame := waitFor(t, conn, "settings")
+		settings, _ := frame["settings"].(map[string]any)
+		if model, _ := settings["model"].(string); model == "sonnet" {
+			return
+		}
+	}
+	t.Error("no settings frame reported the new model")
+}
+
+// A model nobody offers is refused rather than passed through to a launch that
+// would fail later, inside a turn the reviewer is waiting on.
+func TestAnUnknownModelIsRefused(t *testing.T) {
+	rev, _ := newReview(t)
+
+	const secret = "test-secret-phrase"
+	ts := httptest.NewServer(New(Options{Review: rev, Auth: NewTokenAuth(secret)}))
+	defer ts.Close()
+
+	conn := dialWS(t, ts, login(t, ts, secret), ts.URL)
+	waitFor(t, conn, "settings")
+
+	send(t, conn, map[string]any{"type": "setModel", "model": "gpt-4"})
+
+	frame := waitFor(t, conn, "error")
+	if message, _ := frame["message"].(string); !strings.Contains(message, "gpt-4") {
+		t.Errorf("error = %v, want it to name the model", frame)
+	}
+	if got := rev.Settings().Model; got != "" {
+		t.Errorf("model changed to %q despite being refused", got)
+	}
+}

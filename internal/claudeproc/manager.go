@@ -75,6 +75,43 @@ func (m *Manager) Session(docPath, sessionID string) *Session {
 	return s
 }
 
+// SetModel changes the model for every session, present and future. Live
+// processes relaunch at the start of their next turn, resuming where they were.
+func (m *Manager) SetModel(model string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.cfg.Model = model
+	for _, s := range m.sessions {
+		s.SetModel(model)
+	}
+}
+
+// Config reports the configuration new sessions are launched with.
+func (m *Manager) Config() Config {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	out := m.cfg
+	out.AllowedTools = append([]string(nil), m.cfg.AllowedTools...)
+	return out
+}
+
+// Live counts the processes currently running, which is what the reviewer is
+// paying for in memory.
+func (m *Manager) Live() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	n := 0
+	for _, s := range m.sessions {
+		if s.Running() {
+			n++
+		}
+	}
+	return n
+}
+
 // Forget drops a document's session entirely, stopping its process. Used when a
 // file is deleted or renamed, where the conversation's context refers to a path
 // that no longer means anything.

@@ -120,6 +120,20 @@ Authentication is on by default. `--no-auth` is refused unless the bind address
 is loopback — the one misconfiguration that would silently publish your
 documents to the network.
 
+## What Claude is running with
+
+The pill in the top bar names the model — `opus`, `sonnet`, or *default model*
+when the daemon asks for nothing and leaves the choice to your own `claude`
+configuration. Clicking it opens a panel with the rest: the tools, the
+permission mode, where Claude runs, the review branch, what the session has
+cost, how many processes are live, and which `claude` binary is answering.
+
+The model can be changed from that panel mid-review. Nothing in flight is
+interrupted: each document's process relaunches when its next comment arrives
+and **resumes the same conversation on the new model**, so switching to Sonnet
+for a batch of small edits and back to Opus for a hard question costs nothing
+that was already said.
+
 ## Security notes
 
 The threat model is a trusted LAN, but two things are handled properly because

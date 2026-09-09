@@ -18,6 +18,7 @@ import Html.Events as Events
 import Json.Decode as Decode
 import Json.Encode as Encode
 import Marks exposing (Range)
+import Math
 import Protocol exposing (Anchor, Role(..), ServerMsg(..), Thread, ThreadStatus(..))
 
 
@@ -69,6 +70,8 @@ type alias Model =
     , marks : Array Range
     , replyDrafts : Dict String String
     , connection : String
+    , settings : Maybe Protocol.Settings
+    , settingsOpen : Bool
     , error : Maybe String
     }
 
@@ -103,6 +106,8 @@ init _ =
         , marks = []
         , replyDrafts = Dict.empty
         , connection = "connecting"
+        , settings = Nothing
+        , settingsOpen = False
         , error = Nothing
         }
     , command = Cmd.none
@@ -124,6 +129,8 @@ type Msg
     | SubmitReply String
     | ResolveThread String
     | InterruptTurn
+    | ToggleSettings
+    | ModelPicked String
     | DismissError
 
 
@@ -240,6 +247,15 @@ update msg model =
                 Nothing ->
                     stay model
 
+        ToggleSettings ->
+            stay { model | settingsOpen = not model.settingsOpen }
+
+        ModelPicked name ->
+            -- The panel keeps showing the old model until the daemon confirms
+            -- the change in a settings frame: what Claude is actually running
+            -- is the server's answer to give, not the select element's.
+            { model = model, command = socketOut (Protocol.setModel name) }
+
         DismissError ->
             stay { model | error = Nothing }
 
@@ -284,6 +300,9 @@ applyServerMsg frame model =
 
         DocList docs ->
             stay { model | docs = docs }
+
+        SettingsUpdated settings ->
+            stay { model | settings = Just settings }
 
         ServerError message ->
             -- Whatever went wrong, the comment is not filed: take it out of
@@ -480,11 +499,202 @@ viewTopBar model =
 
               else
                 Html.text ""
+            , viewSettingsButton model
             , Html.span
                 [ Attr.class ("conn conn-" ++ model.connection) ]
                 [ Html.text model.connection ]
             ]
+        , viewSettingsPanel model
         ]
+
+
+{-| The button names the model rather than saying "settings", because the model
+is the setting anyone actually wants to check.
+-}
+viewSettingsButton : Model -> Html Msg
+viewSettingsButton model =
+    when model.settings is
+        Nothing ->
+            Html.text ""
+
+        Just settings ->
+            Html.button
+                [ Attr.classList
+                    [ { class = "settings-toggle", enabled = True }
+                    , { class = "active", enabled = model.settingsOpen }
+                    ]
+                , Events.onClick ToggleSettings
+                ]
+                [ Html.text (modelLabel settings), Html.span [ Attr.class "caret" ] [ Html.text "▾" ] ]
+
+
+{-| What to call the model in one word.
+
+The configured name is what the reviewer chose, but it is empty by default --
+the daemon asks for no model at all and lets the CLI decide -- so the resolved
+name is what gets shown until there is a choice to report.
+
+-}
+modelLabel : Protocol.Settings -> String
+modelLabel settings =
+    if not (String.isEmpty settings.model) then
+        settings.model
+
+    else if not (String.isEmpty settings.runningModel) then
+        shortModel settings.runningModel
+
+    else
+        "default model"
+
+
+{-| "claude-sonnet-5" reads as "sonnet" in a toolbar. The full name is in the
+panel, where there is room for it.
+-}
+shortModel : String -> String
+shortModel name =
+    when Array.findFirst (\family -> String.contains family name) [ "opus", "sonnet", "haiku", "fable" ] is
+        Just found ->
+            found.value
+
+        Nothing ->
+            name
+
+
+viewSettingsPanel : Model -> Html Msg
+viewSettingsPanel model =
+    when { open = model.settingsOpen, settings = model.settings } is
+        { open = True, settings = Just settings } ->
+            Html.div
+                [ Attr.class "settings" ]
+                (Array.flatten
+                    [ [ viewModelRow settings ]
+                    , viewSettingRows settings
+                    ]
+                )
+
+        _ ->
+            Html.text ""
+
+
+viewModelRow : Protocol.Settings -> Html Msg
+viewModelRow settings =
+    Html.div
+        [ Attr.class "setting model" ]
+        [ Html.span [ Attr.class "label" ] [ Html.text "model" ]
+        , Html.div
+            [ Attr.class "value" ]
+            [ Html.select
+                [ Events.onInput ModelPicked ]
+                (Array.map (viewModelChoice settings.model) settings.modelChoices)
+            , if String.isEmpty settings.runningModel then
+                Html.p
+                    [ Attr.class "note" ]
+                    [ Html.text "no turn has run yet" ]
+
+              else
+                Html.p
+                    [ Attr.class "note" ]
+                    [ Html.text ("running " ++ settings.runningModel) ]
+            , Html.p
+                [ Attr.class "note" ]
+                [ Html.text "a change applies to the next comment; the conversation continues" ]
+            ]
+        ]
+
+
+viewModelChoice : String -> String -> Html Msg
+viewModelChoice current name =
+    Html.option
+        [ Attr.value name, Attr.selected (name == current) ]
+        [ Html.text
+            (if String.isEmpty name then
+                "default (your claude config)"
+
+             else
+                name
+            )
+        ]
+
+
+viewSettingRows : Protocol.Settings -> Array (Html Msg)
+viewSettingRows settings =
+    Array.flatten
+        [ [ setting "tools" (String.join ", " settings.tools)
+          , setting "permissions" settings.permissionMode
+          , setting "claude runs in" settings.workspace
+          ]
+        , if settings.reviewRoot == settings.workspace then
+            []
+
+          else
+            [ setting "reviewing" settings.reviewRoot ]
+        , if String.isEmpty settings.branch then
+            []
+
+          else
+            [ setting "branch" settings.branch ]
+        , [ setting "spent" (spendLabel settings)
+          , setting "processes" (String.fromInt settings.live ++ " running")
+          , setting "claude" (claudeLabel settings)
+          ]
+        ]
+
+
+{-| The version, and the path only when it is not simply whatever is on PATH --
+which is the answer to "is it even the claude I think it is?" without adding a
+line that says "claude" to everybody else.
+-}
+claudeLabel : Protocol.Settings -> String
+claudeLabel settings =
+    let
+        version =
+            if String.isEmpty settings.cliVersion then
+                "version unknown"
+
+            else
+                settings.cliVersion
+    in
+    if settings.cliPath == "claude" || String.isEmpty settings.cliPath then
+        version
+
+    else
+        version ++ " — " ++ settings.cliPath
+
+
+setting : String -> String -> Html Msg
+setting label value =
+    Html.div
+        [ Attr.class "setting" ]
+        [ Html.span [ Attr.class "label" ] [ Html.text label ]
+        , Html.span [ Attr.class "value" ] [ Html.text value ]
+        ]
+
+
+{-| Spend since this daemon started -- a resumed conversation from an earlier
+run does not carry its cost forward, so the panel says what the number means.
+-}
+spendLabel : Protocol.Settings -> String
+spendLabel settings =
+    let
+        spent =
+            "$" ++ money settings.spentUsd ++ " this session"
+    in
+    if settings.maxBudgetUsd > 0 then
+        spent ++ ", cap $" ++ money settings.maxBudgetUsd ++ " per process"
+
+    else
+        spent
+
+
+money : Float -> String
+money amount =
+    let
+        cents =
+            Math.round (amount * 100)
+    in
+    String.fromInt (cents // 100)
+        ++ "."
+        ++ String.padLeft 2 '0' (String.fromInt (Math.modBy 100 cents))
 
 
 viewDocTab : Maybe Doc -> String -> Html Msg

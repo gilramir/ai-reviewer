@@ -20,6 +20,7 @@ type clientFrame struct {
 	Anchor   review.Anchor `json:"anchor"`
 	Body     string        `json:"body"`
 	ThreadID string        `json:"threadId"`
+	Model    string        `json:"model"`
 }
 
 const (
@@ -54,6 +55,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Everything the browser needs to draw itself, so a reconnect after a
 	// daemon restart recovers without the reviewer touching anything.
 	s.opts.Review.PublishDocList()
+	s.opts.Review.PublishSettings()
 	s.opts.Review.PublishNotices()
 
 	s.readLoop(conn)
@@ -110,6 +112,11 @@ func (s *Server) dispatch(frame clientFrame) {
 
 	case "interrupt":
 		rev.Interrupt(frame.Doc)
+
+	case "setModel":
+		if err := rev.SetModel(frame.Model); err != nil {
+			rev.PublishError(err.Error())
+		}
 
 	default:
 		rev.PublishError("unknown request: " + frame.Type)

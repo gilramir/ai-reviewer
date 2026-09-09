@@ -64,6 +64,13 @@ type Review struct {
 	subs     map[int]chan []byte // subscriber id -> outbound frames
 	nextSub  int
 	notices  []string // things the reviewer must be told about this review
+
+	// runningModel is what the CLI reported for the most recent turn, and
+	// spentUSD what every turn since startup has cost. Both are display only.
+	runningModel string
+	spentUSD     float64
+
+	cliVersion string
 }
 
 // New prepares a review of root. It does not start watching for file changes;
@@ -112,6 +119,8 @@ func New(opts Options) (*Review, error) {
 		threads:  map[string]*Thread{},
 		subs:     map[int]chan []byte{},
 	}
+
+	r.cliVersion = claudeVersion(opts.ClaudeBinary)
 
 	if err := r.load(); err != nil {
 		return nil, err
@@ -382,6 +391,7 @@ func (r *Review) runTurn(threadID, docPath, prompt, subject string) {
 		}
 	})
 	if err != nil {
+		r.noteTurnCost(result.Model, result.CostUSD)
 		r.finishTurn(threadID, docPath, Message{
 			Role: RoleAssistant,
 			Text: "The review process failed: " + err.Error(),
@@ -389,6 +399,8 @@ func (r *Review) runTurn(threadID, docPath, prompt, subject string) {
 		r.publish(errorFrame{Type: "error", Message: err.Error()})
 		return
 	}
+
+	r.noteTurnCost(result.Model, result.CostUSD)
 
 	commit := r.record(docPath, result.Edited, subject, threadID)
 
@@ -479,6 +491,7 @@ func (r *Review) finishTurn(threadID, docPath string, reply Message, commit stri
 		Commit:   commit,
 	})
 	r.broadcastThreads(docPath)
+	r.PublishSettings()
 	_ = r.save()
 }
 

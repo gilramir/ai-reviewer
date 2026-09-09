@@ -50,6 +50,11 @@ type errorFrame struct {
 	Message string `json:"message"`
 }
 
+type settingsFrame struct {
+	Type     string   `json:"type"`
+	Settings Settings `json:"settings"`
+}
+
 // Subscribe registers a browser connection. The returned channel carries
 // pre-marshalled frames; cancel must be called when the connection closes.
 //
@@ -133,6 +138,13 @@ func (r *Review) PublishNotices() {
 	for _, message := range r.Notices() {
 		r.publish(errorFrame{Type: "error", Message: message})
 	}
+}
+
+// PublishSettings pushes the current configuration to every connection. Sent on
+// connect, when the model changes, and at the end of each turn -- which is when
+// the spend and the running model change.
+func (r *Review) PublishSettings() {
+	r.publish(settingsFrame{Type: "settings", Settings: r.Settings()})
 }
 
 // PublishError surfaces a message in the browser.

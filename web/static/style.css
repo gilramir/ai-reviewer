@@ -84,6 +84,71 @@ html, body {
   cursor: pointer;
 }
 
+/* ------------------------------------------------------------ settings */
+
+.settings-toggle {
+  border: 1px solid var(--rule);
+  background: var(--bg);
+  color: var(--ink);
+  font: inherit;
+  padding: 0.2rem 0.5rem;
+  border-radius: 999px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.settings-toggle .caret { color: var(--muted); font-size: 0.7em; }
+.settings-toggle.active { background: var(--accent); color: var(--paper); border-color: var(--accent); }
+.settings-toggle.active .caret { color: inherit; }
+
+/* Anchored to the top bar rather than to the button: the bar is the only thing
+   whose position is known, and a panel that jumps around as the model name
+   changes width reads as a bug. */
+.settings {
+  position: absolute;
+  right: 1rem;
+  top: 2.6rem;
+  z-index: 10;
+  width: min(30rem, calc(100vw - 2rem));
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
+  padding: 0.75rem 0.9rem;
+  font-family: system-ui, sans-serif;
+  font-size: 0.8125rem;
+}
+
+.setting {
+  display: grid;
+  grid-template-columns: 7.5rem 1fr;
+  gap: 0.5rem;
+  padding: 0.3rem 0;
+  align-items: baseline;
+}
+.setting + .setting { border-top: 1px solid var(--rule); }
+.setting .label { color: var(--muted); }
+.setting .value { word-break: break-word; font-family: var(--mono); font-size: 0.75rem; }
+.setting.model .value { font-family: inherit; font-size: inherit; }
+
+.setting select {
+  font: inherit;
+  width: 100%;
+  padding: 0.25rem 0.35rem;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--ink);
+}
+
+.setting .note {
+  margin: 0.3rem 0 0;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-style: italic;
+}
+
 .error {
   padding: 0.5rem 1rem;
   background: var(--danger);

@@ -113,8 +113,21 @@ the tools work properly.
 works with `-p`.
 
 **`--model`** takes an alias for the current model in a family (`opus`, `sonnet`,
-`fable`) or an exact name (`claude-opus-5`). Aliases move when new models ship;
-exact names do not.
+`haiku`, `fable`) or an exact name (`claude-opus-5`). Aliases move when new
+models ship; exact names do not. Three things worth knowing if you want to let a
+user change models without losing their conversation:
+
+- **`--resume` accepts a different `--model`.** Resuming a session started on
+  Opus with `--model sonnet` continues that conversation on Sonnet — verified,
+  and it is what makes a model switch mid-session cheap: relaunch at the next
+  turn instead of killing the one in flight.
+- **The `init` frame reports what the alias resolved to** (`claude-sonnet-5`,
+  `claude-haiku-4-5-20251001`). That is the only way to answer "which model am I
+  actually talking to?" when you passed no `--model` at all.
+- **A bad model name does not fail at launch.** The process starts, and the turn
+  comes back as prose explaining the model is wrong, with a
+  `[claude-code:unrecognized_model]` line on stderr. Validate against a list of
+  your own if you are taking the name from a user.
 
 Two flags this daemon does not use, but you might:
 

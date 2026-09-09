@@ -3,6 +3,7 @@ module Protocol exposing
     , Message
     , Role(..)
     , ServerMsg(..)
+    , Settings
     , Thread
     , ThreadStatus(..)
     , comment
@@ -11,6 +12,7 @@ module Protocol exposing
     , reply
     , resolve
     , serverMsgDecoder
+    , setModel
     )
 
 {-| The wire protocol between the browser and the review daemon.
@@ -85,6 +87,31 @@ type Role
 -- SERVER -> CLIENT
 
 
+{-| What the daemon is running Claude with.
+
+Two models, not one: `model` is what the daemon asks for and may be empty --
+meaning it asks for nothing and the CLI uses the reviewer's own default --
+while `runningModel` is what the CLI reported resolving that to. The second is
+the one that answers "am I on Opus or Sonnet right now?".
+
+-}
+type alias Settings =
+    { model : String
+    , runningModel : String
+    , modelChoices : Array String
+    , tools : Array String
+    , permissionMode : String
+    , workspace : String
+    , reviewRoot : String
+    , branch : String
+    , maxBudgetUsd : Float
+    , spentUsd : Float
+    , live : Int
+    , cliPath : String
+    , cliVersion : String
+    }
+
+
 type ServerMsg
     = DocUpdated Doc
     | ThreadsUpdated { doc : String, threads : Array Thread }
@@ -92,6 +119,7 @@ type ServerMsg
     | TurnEnded { threadId : String, edited : Bool, commit : String }
     | BusyChanged { doc : String, busy : Bool }
     | DocList (Array String)
+    | SettingsUpdated Settings
     | ServerError String
 
 
@@ -137,11 +165,120 @@ serverMsgBody tag =
         "docList" ->
             Decode.map DocList (Decode.field "docs" (Decode.array Decode.string))
 
+        "settings" ->
+            Decode.map SettingsUpdated (Decode.field "settings" settingsDecoder)
+
         "error" ->
             Decode.map ServerError (Decode.field "message" Decode.string)
 
         _ ->
             Decode.fail ("unknown server message type: " ++ tag)
+
+
+{-| The Go side omits zero values, so every field here has a default rather than
+a failed decode -- an empty model and a zero spend are both ordinary states.
+-}
+settingsDecoder : Decoder Settings
+settingsDecoder =
+    Decode.map3
+        (\models paths spend ->
+            { model = models.model
+            , runningModel = models.running
+            , modelChoices = models.choices
+            , tools = paths.tools
+            , permissionMode = paths.permissionMode
+            , workspace = paths.workspace
+            , reviewRoot = paths.reviewRoot
+            , branch = paths.branch
+            , maxBudgetUsd = spend.maxBudgetUsd
+            , spentUsd = spend.spentUsd
+            , live = spend.live
+            , cliPath = spend.cliPath
+            , cliVersion = spend.cliVersion
+            }
+        )
+        modelsDecoder
+        toolsDecoder
+        spendDecoder
+
+
+modelsDecoder : Decoder { model : String, running : String, choices : Array String }
+modelsDecoder =
+    Decode.map3
+        (\model running choices -> { model = model, running = running, choices = choices })
+        (optionalString "model")
+        (optionalString "runningModel")
+        (optionalStrings "modelChoices")
+
+
+toolsDecoder :
+    Decoder
+        { tools : Array String
+        , permissionMode : String
+        , workspace : String
+        , reviewRoot : String
+        , branch : String
+        }
+toolsDecoder =
+    Decode.map5
+        (\tools mode workspace reviewRoot branch ->
+            { tools = tools
+            , permissionMode = mode
+            , workspace = workspace
+            , reviewRoot = reviewRoot
+            , branch = branch
+            }
+        )
+        (optionalStrings "tools")
+        (optionalString "permissionMode")
+        (optionalString "workspace")
+        (optionalString "reviewRoot")
+        (optionalString "branch")
+
+
+spendDecoder :
+    Decoder
+        { maxBudgetUsd : Float
+        , spentUsd : Float
+        , live : Int
+        , cliPath : String
+        , cliVersion : String
+        }
+spendDecoder =
+    Decode.map5
+        (\budget spent live path version ->
+            { maxBudgetUsd = budget
+            , spentUsd = spent
+            , live = live
+            , cliPath = path
+            , cliVersion = version
+            }
+        )
+        (optionalFloat "maxBudgetUsd")
+        (optionalFloat "spentUsd")
+        (optionalInt "live")
+        (optionalString "cliPath")
+        (optionalString "cliVersion")
+
+
+optionalString : String -> Decoder String
+optionalString field =
+    Decode.oneOf [ Decode.field field Decode.string, Decode.succeed "" ]
+
+
+optionalStrings : String -> Decoder (Array String)
+optionalStrings field =
+    Decode.oneOf [ Decode.field field (Decode.array Decode.string), Decode.succeed [] ]
+
+
+optionalFloat : String -> Decoder Float
+optionalFloat field =
+    Decode.oneOf [ Decode.field field Decode.float, Decode.succeed 0 ]
+
+
+optionalInt : String -> Decoder Int
+optionalInt field =
+    Decode.oneOf [ Decode.field field Decode.int, Decode.succeed 0 ]
 
 
 threadDecoder : Decoder Thread
@@ -243,6 +380,14 @@ resolve threadId =
 interrupt : String -> Encode.Value
 interrupt doc =
     tagged "interrupt" [ { key = "doc", value = Encode.string doc } ]
+
+
+{-| Ask for a different model. An empty string means "whatever the reviewer's
+own claude configuration selects", which is the daemon's default.
+-}
+setModel : String -> Encode.Value
+setModel model =
+    tagged "setModel" [ { key = "model", value = Encode.string model } ]
 
 
 encodeAnchor : Anchor -> Encode.Value

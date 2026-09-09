@@ -205,3 +205,54 @@ func TestTheProcessRunsInTheConfiguredDirectory(t *testing.T) {
 		t.Errorf("process ran in %q, want %q", have, want)
 	}
 }
+
+// A model chosen mid-review reaches the next launch, and the conversation is
+// resumed rather than restarted: the CLI is happy to continue a session on a
+// different model, so switching costs nothing said so far.
+func TestChangingTheModelRelaunchesAndResumes(t *testing.T) {
+	dir := t.TempDir()
+	bin, err := filepath.Abs("testdata/stub-claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	argvLog := filepath.Join(dir, "argv.log")
+	env := append(os.Environ(),
+		"ARGV_LOG="+argvLog,
+		"USED_IDS="+filepath.Join(dir, "used-ids"))
+
+	s := New(testID, Config{Binary: bin, WorkDir: dir, Env: env})
+	t.Cleanup(func() { _ = s.Close() })
+
+	ask(t, s, "before")
+	if !s.Running() {
+		t.Fatal("no process to relaunch")
+	}
+
+	s.SetModel("sonnet")
+
+	// The running process is left alone until the next turn: a setting change
+	// must not interrupt a question already in flight.
+	if !s.Running() {
+		t.Error("the process was killed by a setting change")
+	}
+
+	ask(t, s, "after")
+
+	data, err := os.ReadFile(argvLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("%d launches, want 2:\n%s", len(lines), data)
+	}
+	if strings.Contains(lines[0], "--model") {
+		t.Errorf("first launch already had a model: %s", lines[0])
+	}
+	if !strings.Contains(lines[1], "--model sonnet") {
+		t.Errorf("second launch did not carry the new model: %s", lines[1])
+	}
+	if !strings.Contains(lines[1], "--resume") {
+		t.Errorf("second launch restarted the conversation instead of resuming: %s", lines[1])
+	}
+}

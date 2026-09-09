@@ -54,6 +54,11 @@ func (c *Config) applyDefaults() {
 	}
 }
 
+// PermissionMode is how the CLI is told to answer its own permission prompts.
+// Nothing the reviewer does should stop to ask a question nobody is watching
+// for, and this is the narrowest mode that never blocks.
+const PermissionMode = "acceptEdits"
+
 // EventKind distinguishes what a Session emits mid-turn.
 type EventKind int
 
@@ -77,6 +82,10 @@ type Event struct {
 type TurnResult struct {
 	// Text is the assistant's final prose for the turn.
 	Text string
+	// Model is the model the CLI resolved for this turn, as it reported it in
+	// the init frame -- "claude-sonnet-5" for a --model of "sonnet", and the
+	// user's own configured default when the daemon asked for nothing.
+	Model string
 	// Edited lists absolute or working-dir-relative paths the model wrote to.
 	Edited []string
 	// CostUSD is what the turn cost, as reported by the CLI.
@@ -105,7 +114,11 @@ type Session struct {
 	// everStarted records that the CLI has seen this session id at least once,
 	// which is what decides between --session-id and --resume.
 	everStarted bool
-	lastUse     time.Time
+	// restartPending is set when a setting that only takes effect at launch --
+	// the model -- has changed under a live process.
+	restartPending bool
+	runningModel   string
+	lastUse        time.Time
 }
 
 // New creates a Session bound to a CLI session id. The id should be a UUID the
@@ -222,13 +235,54 @@ func (s *Session) Running() bool {
 	return s.started
 }
 
+// SetModel changes the model this session will use.
+//
+// The CLI takes the model at launch, so a live process has to go. It is not
+// killed here: a turn may be in flight, and interrupting the reviewer's own
+// question to apply a setting they just changed would be a poor trade. The
+// restart happens at the start of the next turn instead, resuming the same
+// conversation on the new model -- which the CLI is happy to do.
+func (s *Session) SetModel(model string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cfg.Model == model {
+		return
+	}
+	s.cfg.Model = model
+	s.restartPending = s.started
+}
+
+// RunningModel is the model the CLI reported for the most recent turn, or empty
+// before the first one.
+func (s *Session) RunningModel() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.runningModel
+}
+
 func (s *Session) ensureStarted(ctx context.Context) error {
+	if s.takeRestart() {
+		s.stop()
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.started {
 		return nil
 	}
 	return s.startLocked(ctx)
+}
+
+// takeRestart reports whether a pending relaunch is due, clearing the flag. It
+// is called with no lock held, because stopping the process takes one.
+func (s *Session) takeRestart() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.restartPending {
+		return false
+	}
+	s.restartPending = false
+	return true
 }
 
 func (s *Session) startLocked(ctx context.Context) error {
@@ -296,8 +350,8 @@ func (s *Session) args() []string {
 		"--output-format", "stream-json",
 		"--verbose",
 		// Nothing the reviewer does should stop to ask a question nobody is
-		// watching for; writes are confined to the review directory instead.
-		"--permission-mode", "acceptEdits",
+		// watching for; the working directory is what bounds the damage.
+		"--permission-mode", PermissionMode,
 		// The reviewer's own MCP servers have no business in a document review,
 		// and loading them would widen the tool surface unpredictably.
 		"--strict-mcp-config",
@@ -410,7 +464,9 @@ func (s *Session) applyFrame(msg streamFrame, result *TurnResult, seen map[strin
 		if msg.Subtype == "init" {
 			s.mu.Lock()
 			s.everStarted = true
+			s.runningModel = msg.Model
 			s.mu.Unlock()
+			result.Model = msg.Model
 		}
 
 	case "assistant":
@@ -527,6 +583,7 @@ type streamFrame struct {
 	Subtype      string          `json:"subtype"`
 	SessionID    string          `json:"session_id"`
 	Message      json.RawMessage `json:"message"`
+	Model        string          `json:"model"`
 	Result       string          `json:"result"`
 	IsError      bool            `json:"is_error"`
 	TotalCostUSD float64         `json:"total_cost_usd"`
