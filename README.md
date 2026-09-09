@@ -229,3 +229,7 @@ fixed: a selection spanning two blocks files its comment but is not highlighted.
 ```sh
 cd web/tests && gren make Check --output=app && node app --help
 ```
+
+## License
+
+ISC. See [LICENSE](LICENSE).
