@@ -16,6 +16,11 @@
   var backoff = 500;
   var MAX_BACKOFF = 15000;
 
+  // Frames written while the socket is down. A click during a reconnect should
+  // take effect when the socket returns, not vanish.
+  var pending = [];
+  var MAX_PENDING = 64;
+
   function socketURL() {
     var scheme = window.location.protocol === "https:" ? "wss:" : "ws:";
     return scheme + "//" + window.location.host + "/ws";
@@ -28,6 +33,12 @@
     socket.onopen = function () {
       backoff = 500;
       app.ports.socketState.send("open");
+
+      var queued = pending;
+      pending = [];
+      for (var i = 0; i < queued.length; i++) {
+        socket.send(JSON.stringify(queued[i]));
+      }
     };
 
     socket.onmessage = function (event) {
@@ -43,10 +54,19 @@
     socket.onclose = function () {
       socket = null;
       app.ports.socketState.send("closed");
-      // The daemon restarts often during development, and the session cookie
-      // outlives the socket, so reconnecting is nearly always the right move.
-      window.setTimeout(connect, backoff);
-      backoff = Math.min(backoff * 2, MAX_BACKOFF);
+
+      // Sessions live in the daemon's memory, so a restart invalidates every
+      // cookie and the upgrade is refused with 401 from then on. Retrying that
+      // forever leaves a page whose buttons quietly do nothing, so find out
+      // which kind of failure this is before deciding.
+      hasSession(function (alive) {
+        if (!alive) {
+          window.location.assign("/login");
+          return;
+        }
+        window.setTimeout(connect, backoff);
+        backoff = Math.min(backoff * 2, MAX_BACKOFF);
+      });
     };
 
     socket.onerror = function () {
@@ -54,9 +74,27 @@
     };
   }
 
+  // A rejected upgrade and an unreachable daemon are indistinguishable from
+  // the WebSocket API, so ask over HTTP, where the status code survives.
+  function hasSession(done) {
+    window
+      .fetch("/session", { credentials: "same-origin", cache: "no-store" })
+      .then(function (response) {
+        done(response.status !== 401);
+      })
+      .catch(function () {
+        // The daemon is unreachable rather than refusing us; keep retrying.
+        done(true);
+      });
+  }
+
   app.ports.socketOut.subscribe(function (frame) {
     if (socket && socket.readyState === WebSocket.OPEN) {
       socket.send(JSON.stringify(frame));
+      return;
+    }
+    if (pending.length < MAX_PENDING) {
+      pending.push(frame);
     }
   });
 

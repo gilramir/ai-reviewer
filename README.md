@@ -131,6 +131,22 @@ Claude runs with `--tools Read,Edit,Write,Grep,Glob` and `--strict-mcp-config`:
 no Bash, and none of your personal MCP servers. The daemon is the only writer of
 git history.
 
+## Known issues
+
+**`Html.Keyed` is avoided.** `gren-lang/browser` 6.0.2 ships a virtual-dom
+kernel whose `_VirtualDom_dekey` reads Elm's tuple field (`.b`) from what Gren
+represents as a `{ key, node }` record, so every child becomes `undefined`. It
+runs on any unkeyed-to-keyed transition — including the ordinary "empty state,
+then content" pattern — and takes the page down with `Cannot read properties of
+undefined (reading '$')`. Fixed by the (unmerged) gren-lang/browser PR #106;
+once that ships, the document root and the list nodes in `Main.gren` can go back
+to `Html.Keyed`.
+
+**Sessions do not survive a restart.** They live in the daemon's memory, and a
+restart prints a new password anyway. The browser notices via `/session` and
+sends you to the login page rather than retrying a cookie that can never work
+again; anything you clicked while disconnected is queued and sent on reconnect.
+
 ## Layout
 
 ```

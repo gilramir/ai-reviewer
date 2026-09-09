@@ -44,6 +44,7 @@ func New(opts Options) *Server {
 	s := &Server{opts: opts, mux: http.NewServeMux()}
 
 	s.mux.HandleFunc("/login", s.handleLogin)
+	s.mux.HandleFunc("/session", s.handleSession)
 	s.mux.HandleFunc("/logout", s.handleLogout)
 	s.mux.Handle("/ws", s.protect(http.HandlerFunc(s.handleWebSocket)))
 	s.mux.Handle("/static/", s.protect(http.StripPrefix("/static/", http.FileServer(http.FS(web.Static())))))
@@ -71,6 +72,23 @@ func (s *Server) protect(next http.Handler) http.Handler {
 		}
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 	})
+}
+
+// handleSession reports whether the caller still has a live session, as a
+// status code rather than a redirect.
+//
+// The browser needs this because the WebSocket API does not expose the
+// handshake's HTTP status: a rejected upgrade and an unreachable server look
+// identical from JavaScript. Without it a client whose session died cannot tell
+// that reconnecting will never succeed, and retries forever while every click
+// silently does nothing.
+func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	if s.opts.Auth == nil || s.opts.Auth.Authenticated(r) {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	http.Error(w, "unauthorised", http.StatusUnauthorized)
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {

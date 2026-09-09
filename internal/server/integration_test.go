@@ -379,3 +379,70 @@ func TestPathsOutsideRootAreRefused(t *testing.T) {
 		t.Errorf("error was %q", msg)
 	}
 }
+
+// The browser cannot read a rejected WebSocket handshake's status, so it asks
+// /session instead. Getting this wrong leaves a page that retries forever while
+// every click silently does nothing.
+func TestSessionProbeReportsAuthState(t *testing.T) {
+	rev, _ := newReview(t)
+
+	const secret = "secret"
+	ts := httptest.NewServer(New(Options{Review: rev, Auth: NewTokenAuth(secret)}))
+	defer ts.Close()
+
+	// Without a session: 401, and not a redirect to the login page, which the
+	// client's fetch would follow and mistake for success.
+	bare := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	resp, err := bare.Get(ts.URL + "/session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("unauthenticated /session = %d, want 401", resp.StatusCode)
+	}
+
+	// With one: 204.
+	client := login(t, ts, secret)
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/session", nil)
+	for _, c := range client.Jar.Cookies(nil) {
+		req.AddCookie(c)
+	}
+	resp2, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusNoContent {
+		t.Errorf("authenticated /session = %d, want 204", resp2.StatusCode)
+	}
+}
+
+// A restart forgets every session, which is what made a still-open page retry
+// against a cookie that could never work again.
+func TestSessionsDoNotSurviveANewAuth(t *testing.T) {
+	rev, _ := newReview(t)
+
+	const secret = "secret"
+	first := NewTokenAuth(secret)
+	ts := httptest.NewServer(New(Options{Review: rev, Auth: first}))
+	defer ts.Close()
+
+	client := login(t, ts, secret)
+	cookies := client.Jar.Cookies(nil)
+	if len(cookies) == 0 {
+		t.Fatal("login issued no cookie")
+	}
+
+	// A fresh Auth stands in for the daemon coming back up.
+	replacement := NewTokenAuth(secret)
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/session", nil)
+	for _, c := range cookies {
+		req.AddCookie(c)
+	}
+	if replacement.Authenticated(req) {
+		t.Error("a cookie from the previous process was accepted after restart")
+	}
+}

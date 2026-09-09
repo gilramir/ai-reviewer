@@ -15,7 +15,6 @@ import Doc exposing (Align(..), Doc, Kind(..), Node)
 import Html exposing (Html)
 import Html.Attributes as Attr
 import Html.Events as Events
-import Html.Keyed
 import Json.Decode as Decode
 import Json.Encode as Encode
 import Protocol exposing (Anchor, Role(..), ServerMsg(..), Thread, ThreadStatus(..))
@@ -420,15 +419,19 @@ viewNode quotes node =
     let
         kids =
             Array.map (viewNode quotes) (Doc.children node)
-
-        keyedKids =
-            Array.map
-                (\child -> { key = Doc.id child, node = viewNode quotes child })
-                (Doc.children node)
     in
     when Doc.kind node is
         Document ->
-            Html.Keyed.node "article" (attrs node "prose") keyedKids
+            -- Html.Keyed would be the natural choice here, and for the lists
+            -- below, but it is unusable in gren-lang/browser 6.0.2: the
+            -- virtual-dom kernel's _VirtualDom_dekey still reads Elm's tuple
+            -- layout (`.b`) from what Gren now represents as a { key, node }
+            -- record, so every child becomes undefined. It runs whenever the
+            -- previous node in a position was unkeyed and the new one is
+            -- keyed -- exactly the transition from "Select a document." to a
+            -- rendered document -- and takes the whole page down with
+            -- "Cannot read properties of undefined (reading '$')".
+            Html.node "article" (attrs node "prose") kids
 
         Paragraph ->
             Html.p (attrs node "") kids
@@ -446,10 +449,10 @@ viewNode quotes node =
 
         ListBlock list ->
             if list.ordered then
-                Html.Keyed.node "ol" (orderedAttrs node list.start) keyedKids
+                Html.ol (orderedAttrs node list.start) kids
 
             else
-                Html.Keyed.node "ul" (attrs node "") keyedKids
+                Html.ul (attrs node "") kids
 
         ListItem item ->
             when item.checked is
