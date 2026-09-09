@@ -1,0 +1,17 @@
+# Build output
+/bin/
+/web/dist/*
+!/web/dist/.gitkeep
+
+# Fetched dependencies. gren.json pins exact versions, so these are recoverable
+# and need not be vendored.
+/web/gren_packages/
+/web/.gren/
+/node_modules/
+
+# devbox.lock IS committed: it is the record of which nix derivations the
+# pinned versions actually resolved to.
+.devbox/
+
+# Per-review state written into a review root.
+.ai-reviewer/

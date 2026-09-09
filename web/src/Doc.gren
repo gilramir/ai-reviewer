@@ -1,0 +1,367 @@
+module Doc exposing
+    ( Align(..)
+    , Doc
+    , Kind(..)
+    , Node(..)
+    , Span
+    , children
+    , decoder
+    , find
+    , id
+    , kind
+    , nodeDecoder
+    , span
+    , text
+    )
+
+{-| The document tree, mirroring `internal/mdast` on the server.
+
+The server owns Markdown parsing entirely: this module only decodes what
+goldmark already worked out. That is deliberate — a second parser here would be
+a second opinion about where a paragraph starts, and comment anchors would drift
+whenever the two disagreed.
+
+Every field the Go side marks `omitempty` is decoded through one of the
+`optional*` helpers below, so an absent field and a zero value stay
+interchangeable.
+
+-}
+
+import Array exposing (Array)
+import Json.Decode as Decode exposing (Decoder)
+
+
+{-| A half-open byte range into the document source. The client never holds the
+source itself; spans travel back to the server when a comment is filed.
+-}
+type alias Span =
+    { start : Int
+    , end : Int
+    }
+
+
+type alias Doc =
+    { path : String
+    , rev : Int
+    , root : Node
+    }
+
+
+{-| Wrapped in a custom type because Gren, like Elm, does not allow a recursive
+type alias.
+-}
+type Node
+    = Node
+        { id : String
+        , span : Span
+        , kind : Kind
+        , children : Array Node
+        }
+
+
+type Kind
+    = Document
+    | Paragraph
+    | Heading Int
+    | CodeBlock { lang : String, text : String }
+    | BlockQuote
+    | ListBlock { ordered : Bool, start : Int }
+    | ListItem { checked : Maybe Bool }
+    | ThematicBreak
+    | HtmlBlock String
+    | Table
+    | TableRow { header : Bool }
+    | TableCell { header : Bool, align : Align }
+    | Text String
+    | Emphasis
+    | Strong
+    | Strikethrough
+    | CodeSpan String
+    | Link { url : String, title : String }
+    | Image { url : String, title : String, alt : String }
+    | LineBreak
+    | RawHtml String
+
+
+type Align
+    = AlignDefault
+    | AlignLeft
+    | AlignRight
+    | AlignCenter
+
+
+-- ACCESSORS
+--
+-- Unwrapping `Node` at every use site is noisy, so the common projections live
+-- here.
+
+
+id : Node -> String
+id (Node n) =
+    n.id
+
+
+span : Node -> Span
+span (Node n) =
+    n.span
+
+
+kind : Node -> Kind
+kind (Node n) =
+    n.kind
+
+
+children : Node -> Array Node
+children (Node n) =
+    n.children
+
+
+{-| The plain text of a subtree, with no markup. Used to build the quoted anchor
+that travels with a comment, and to label threads in the sidebar.
+-}
+text : Node -> String
+text (Node n) =
+    let
+        own =
+            when n.kind is
+                Text t ->
+                    t
+
+                CodeSpan t ->
+                    t
+
+                CodeBlock c ->
+                    c.text
+
+                HtmlBlock t ->
+                    t
+
+                RawHtml t ->
+                    t
+
+                LineBreak ->
+                    " "
+
+                _ ->
+                    ""
+    in
+    Array.foldl (\child acc -> acc ++ text child) own n.children
+
+
+{-| Depth-first search for the node with a given id.
+-}
+find : String -> Node -> Maybe Node
+find wanted (Node n) =
+    if n.id == wanted then
+        Just (Node n)
+
+    else
+        Array.foldl
+            (\child acc ->
+                when acc is
+                    Just found ->
+                        Just found
+
+                    Nothing ->
+                        find wanted child
+            )
+            Nothing
+            n.children
+
+
+-- DECODERS
+
+
+decoder : Decoder Doc
+decoder =
+    Decode.map3
+        (\path rev root -> { path = path, rev = rev, root = root })
+        (Decode.field "path" Decode.string)
+        (Decode.field "rev" Decode.int)
+        (Decode.field "root" nodeDecoder)
+
+
+nodeDecoder : Decoder Node
+nodeDecoder =
+    Decode.map4
+        (\nodeId nodeSpan nodeKind kids ->
+            Node
+                { id = nodeId
+                , span = nodeSpan
+                , kind = nodeKind
+                , children = kids
+                }
+        )
+        (Decode.field "id" Decode.string)
+        (Decode.field "span" spanDecoder)
+        kindDecoder
+        childrenDecoder
+
+
+spanDecoder : Decoder Span
+spanDecoder =
+    Decode.map2
+        (\start end -> { start = start, end = end })
+        (Decode.field "start" Decode.int)
+        (Decode.field "end" Decode.int)
+
+
+childrenDecoder : Decoder (Array Node)
+childrenDecoder =
+    Decode.oneOf
+        [ Decode.field "children" (Decode.array (Decode.lazy (\_ -> nodeDecoder)))
+        , Decode.succeed []
+        ]
+
+
+{-| Dispatch on the server's `kind` tag. An unrecognised kind fails the decode
+rather than rendering as nothing: a node type the server knows and the client
+does not is a bug we want to see immediately, not a paragraph that silently
+vanishes from a document under review.
+-}
+kindDecoder : Decoder Kind
+kindDecoder =
+    Decode.field "kind" Decode.string
+        |> Decode.andThen kindFromTag
+
+
+kindFromTag : String -> Decoder Kind
+kindFromTag tag =
+    when tag is
+        "document" ->
+            Decode.succeed Document
+
+        "paragraph" ->
+            Decode.succeed Paragraph
+
+        "heading" ->
+            Decode.map Heading (Decode.field "level" Decode.int)
+
+        "codeBlock" ->
+            Decode.map2
+                (\lang body -> CodeBlock { lang = lang, text = body })
+                (optionalString "lang")
+                (optionalString "text")
+
+        "blockQuote" ->
+            Decode.succeed BlockQuote
+
+        "list" ->
+            Decode.map2
+                (\ordered start -> ListBlock { ordered = ordered, start = start })
+                (optionalBool "ordered")
+                (optionalInt "listStart")
+
+        "listItem" ->
+            Decode.map
+                (\checked -> ListItem { checked = checked })
+                (optionalMaybeBool "checked")
+
+        "thematicBreak" ->
+            Decode.succeed ThematicBreak
+
+        "htmlBlock" ->
+            Decode.map HtmlBlock (optionalString "text")
+
+        "table" ->
+            Decode.succeed Table
+
+        "tableRow" ->
+            Decode.map (\header -> TableRow { header = header }) (optionalBool "header")
+
+        "tableCell" ->
+            Decode.map2
+                (\header align -> TableCell { header = header, align = align })
+                (optionalBool "header")
+                (Decode.map alignFromTag (optionalString "align"))
+
+        "text" ->
+            Decode.map Text (optionalString "text")
+
+        "emphasis" ->
+            Decode.succeed Emphasis
+
+        "strong" ->
+            Decode.succeed Strong
+
+        "strikethrough" ->
+            Decode.succeed Strikethrough
+
+        "codeSpan" ->
+            Decode.map CodeSpan (optionalString "text")
+
+        "link" ->
+            Decode.map2
+                (\url title -> Link { url = url, title = title })
+                (optionalString "url")
+                (optionalString "title")
+
+        "image" ->
+            Decode.map3
+                (\url title alt -> Image { url = url, title = title, alt = alt })
+                (optionalString "url")
+                (optionalString "title")
+                (optionalString "alt")
+
+        "lineBreak" ->
+            Decode.succeed LineBreak
+
+        "rawHtml" ->
+            Decode.map RawHtml (optionalString "text")
+
+        _ ->
+            Decode.fail ("unknown node kind from server: " ++ tag)
+
+
+alignFromTag : String -> Align
+alignFromTag tag =
+    when tag is
+        "left" ->
+            AlignLeft
+
+        "right" ->
+            AlignRight
+
+        "center" ->
+            AlignCenter
+
+        _ ->
+            AlignDefault
+
+
+-- OPTIONAL FIELD HELPERS
+--
+-- The Go encoder omits zero-valued fields, so every non-mandatory field needs a
+-- default rather than a failed decode.
+
+
+optionalString : String -> Decoder String
+optionalString field =
+    Decode.oneOf
+        [ Decode.field field Decode.string
+        , Decode.succeed ""
+        ]
+
+
+optionalInt : String -> Decoder Int
+optionalInt field =
+    Decode.oneOf
+        [ Decode.field field Decode.int
+        , Decode.succeed 0
+        ]
+
+
+optionalBool : String -> Decoder Bool
+optionalBool field =
+    Decode.oneOf
+        [ Decode.field field Decode.bool
+        , Decode.succeed False
+        ]
+
+
+optionalMaybeBool : String -> Decoder (Maybe Bool)
+optionalMaybeBool field =
+    Decode.oneOf
+        [ Decode.map Just (Decode.field field Decode.bool)
+        , Decode.succeed Nothing
+        ]

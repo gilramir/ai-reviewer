@@ -1,0 +1,774 @@
+port module Main exposing (main)
+
+{-| The review UI.
+
+The client renders a tree the server parsed and holds no Markdown of its own.
+Everything durable — documents, threads, transcripts, commits — lives on the
+server; a reload rebuilds this model from one `doc` and one `threads` message.
+
+-}
+
+import Array exposing (Array)
+import Browser
+import Dict exposing (Dict)
+import Doc exposing (Align(..), Doc, Kind(..), Node)
+import Html exposing (Html)
+import Html.Attributes as Attr
+import Html.Events as Events
+import Html.Keyed
+import Json.Decode as Decode
+import Json.Encode as Encode
+import Protocol exposing (Anchor, Role(..), ServerMsg(..), Thread, ThreadStatus(..))
+
+
+-- PORTS
+--
+-- Three, and only three. Everything else the app needs is expressible in Gren.
+
+
+{-| Outbound protocol frames. The JS side stringifies and writes to the socket.
+-}
+port socketOut : Encode.Value -> Cmd msg
+
+
+{-| Inbound protocol frames, already parsed from JSON by the JS side.
+-}
+port socketIn : (Decode.Value -> msg) -> Sub msg
+
+
+{-| Connection lifecycle: "open", "closed", or "connecting".
+-}
+port socketState : (String -> msg) -> Sub msg
+
+
+{-| A completed text selection inside the document pane.
+
+The JS side does the DOM work — walking up to the nearest `[data-node-id]`,
+reading the surrounding characters for the anchor — and hands over a finished
+anchor. Sending text rather than DOM offsets means the payload stays valid even
+if a re-render lands while the reviewer is still typing their comment.
+
+-}
+port selectionIn : (Decode.Value -> msg) -> Sub msg
+
+
+{-| Drop the browser selection once a comment has been filed.
+-}
+port clearSelection : {} -> Cmd msg
+
+
+-- MODEL
+
+
+type alias Model =
+    { docs : Array String
+    , current : Maybe Doc
+    , threads : Array Thread
+    , busy : Bool
+    , composing : Maybe { anchor : Anchor, draft : String }
+    , replyDrafts : Dict String String
+    , connection : String
+    , error : Maybe String
+    }
+
+
+init : {} -> { model : Model, command : Cmd Msg }
+init _ =
+    { model =
+        { docs = []
+        , current = Nothing
+        , threads = []
+        , busy = False
+        , composing = Nothing
+        , replyDrafts = Dict.empty
+        , connection = "connecting"
+        , error = Nothing
+        }
+    , command = Cmd.none
+    }
+
+
+-- UPDATE
+
+
+type Msg
+    = ServerFrame Decode.Value
+    | SelectionMade Decode.Value
+    | ConnectionState String
+    | OpenDoc String
+    | DraftChanged String
+    | SubmitComment
+    | CancelComment
+    | ReplyChanged { threadId : String, text : String }
+    | SubmitReply String
+    | ResolveThread String
+    | InterruptTurn
+    | DismissError
+
+
+update : Msg -> Model -> { model : Model, command : Cmd Msg }
+update msg model =
+    when msg is
+        ServerFrame raw ->
+            when Decode.decodeValue Protocol.serverMsgDecoder raw is
+                Ok frame ->
+                    applyServerMsg frame model
+
+                Err err ->
+                    stay { model | error = Just (Decode.errorToString err) }
+
+        SelectionMade raw ->
+            when Decode.decodeValue anchorDecoder raw is
+                Ok anchor ->
+                    if String.isEmpty (String.trim anchor.quote) then
+                        stay { model | composing = Nothing }
+
+                    else
+                        stay { model | composing = Just { anchor = anchor, draft = "" } }
+
+                Err _ ->
+                    stay { model | composing = Nothing }
+
+        ConnectionState state ->
+            stay { model | connection = state }
+
+        OpenDoc path ->
+            { model = { model | composing = Nothing }
+            , command = socketOut (Protocol.openDoc path)
+            }
+
+        DraftChanged text ->
+            when model.composing is
+                Just composing ->
+                    stay { model | composing = Just { composing | draft = text } }
+
+                Nothing ->
+                    stay model
+
+        SubmitComment ->
+            when { composing = model.composing, doc = model.current } is
+                { composing = Just composing, doc = Just doc } ->
+                    if String.isEmpty (String.trim composing.draft) then
+                        stay model
+
+                    else
+                        { model = { model | composing = Nothing }
+                        , command =
+                            Cmd.batch
+                                [ socketOut
+                                    (Protocol.comment
+                                        { doc = doc.path
+                                        , anchor = composing.anchor
+                                        , body = composing.draft
+                                        }
+                                    )
+                                , clearSelection {}
+                                ]
+                        }
+
+                _ ->
+                    stay model
+
+        CancelComment ->
+            { model = { model | composing = Nothing }, command = clearSelection {} }
+
+        ReplyChanged change ->
+            stay
+                { model | replyDrafts = Dict.set change.threadId change.text model.replyDrafts }
+
+        SubmitReply threadId ->
+            let
+                draft =
+                    Dict.get threadId model.replyDrafts
+                        |> Maybe.withDefault ""
+            in
+            if String.isEmpty (String.trim draft) then
+                stay model
+
+            else
+                { model = { model | replyDrafts = Dict.remove threadId model.replyDrafts }
+                , command = socketOut (Protocol.reply { threadId = threadId, body = draft })
+                }
+
+        ResolveThread threadId ->
+            { model = model, command = socketOut (Protocol.resolve threadId) }
+
+        InterruptTurn ->
+            when model.current is
+                Just doc ->
+                    { model = model, command = socketOut (Protocol.interrupt doc.path) }
+
+                Nothing ->
+                    stay model
+
+        DismissError ->
+            stay { model | error = Nothing }
+
+
+stay : Model -> { model : Model, command : Cmd Msg }
+stay model =
+    { model = model, command = Cmd.none }
+
+
+applyServerMsg : ServerMsg -> Model -> { model : Model, command : Cmd Msg }
+applyServerMsg frame model =
+    when frame is
+        DocUpdated doc ->
+            -- A re-render arriving mid-composition would leave the reviewer
+            -- typing against a quote that may no longer exist, so the composer
+            -- closes. The thread list keeps the anchor either way.
+            stay
+                { model
+                    | current = Just doc
+                    , composing = Nothing
+                }
+
+        ThreadsUpdated payload ->
+            stay { model | threads = payload.threads }
+
+        AssistantDelta payload ->
+            stay { model | threads = appendDelta payload.threadId payload.text model.threads }
+
+        TurnEnded payload ->
+            stay
+                { model
+                    | threads =
+                        mapThread payload.threadId
+                            (\thread -> { thread | status = Open, commit = payload.commit })
+                            model.threads
+                }
+
+        BusyChanged payload ->
+            stay { model | busy = payload.busy }
+
+        DocList docs ->
+            stay { model | docs = docs }
+
+        ServerError message ->
+            stay { model | error = Just message }
+
+
+{-| Streamed assistant text arrives in fragments; each one extends the thread's
+trailing assistant message, or starts a new one if the reviewer spoke last.
+-}
+appendDelta : String -> String -> Array Thread -> Array Thread
+appendDelta threadId text threads =
+    mapThread threadId
+        (\thread ->
+            let
+                lastIndex =
+                    Array.length thread.messages - 1
+            in
+            when Array.get lastIndex thread.messages is
+                Just last ->
+                    if last.role == Assistant then
+                        { thread
+                            | messages =
+                                Array.set lastIndex
+                                    { last | text = last.text ++ text }
+                                    thread.messages
+                        }
+
+                    else
+                        { thread | messages = Array.pushLast { role = Assistant, text = text } thread.messages }
+
+                Nothing ->
+                    { thread | messages = Array.pushLast { role = Assistant, text = text } thread.messages }
+        )
+        threads
+
+
+mapThread : String -> (Thread -> Thread) -> Array Thread -> Array Thread
+mapThread threadId fn threads =
+    Array.map
+        (\thread ->
+            if thread.id == threadId then
+                fn thread
+
+            else
+                thread
+        )
+        threads
+
+
+anchorDecoder : Decode.Decoder Anchor
+anchorDecoder =
+    Decode.map4
+        (\nodeId quote prefix suffix ->
+            { nodeId = nodeId, quote = quote, prefix = prefix, suffix = suffix }
+        )
+        (Decode.field "nodeId" Decode.string)
+        (Decode.field "quote" Decode.string)
+        (Decode.field "prefix" Decode.string)
+        (Decode.field "suffix" Decode.string)
+
+
+-- SUBSCRIPTIONS
+
+
+subscriptions : Model -> Sub Msg
+subscriptions _ =
+    Sub.batch
+        [ socketIn ServerFrame
+        , selectionIn SelectionMade
+        , socketState ConnectionState
+        ]
+
+
+-- VIEW
+
+
+view : Model -> Html Msg
+view model =
+    Html.div
+        [ Attr.class "app" ]
+        [ viewTopBar model
+        , viewError model.error
+        , Html.div
+            [ Attr.class "body" ]
+            [ viewDocument model
+            , viewSidebar model
+            ]
+        , viewComposer model.composing
+        ]
+
+
+viewTopBar : Model -> Html Msg
+viewTopBar model =
+    Html.header
+        [ Attr.class "topbar" ]
+        [ Html.nav
+            [ Attr.class "docs" ]
+            (Array.map (viewDocTab model.current) model.docs)
+        , Html.div
+            [ Attr.class "state" ]
+            [ if model.busy then
+                Html.button
+                    [ Attr.class "interrupt", Events.onClick InterruptTurn ]
+                    [ Html.text "thinking — interrupt" ]
+
+              else
+                Html.text ""
+            , Html.span
+                [ Attr.class ("conn conn-" ++ model.connection) ]
+                [ Html.text model.connection ]
+            ]
+        ]
+
+
+viewDocTab : Maybe Doc -> String -> Html Msg
+viewDocTab current path =
+    let
+        isCurrent =
+            when current is
+                Just doc ->
+                    doc.path == path
+
+                Nothing ->
+                    False
+    in
+    Html.button
+        [ Attr.classList
+            [ { class = "doc-tab", enabled = True }
+            , { class = "active", enabled = isCurrent }
+            ]
+        , Events.onClick (OpenDoc path)
+        ]
+        [ Html.text path ]
+
+
+viewError : Maybe String -> Html Msg
+viewError maybeError =
+    when maybeError is
+        Just message ->
+            Html.div
+                [ Attr.class "error", Events.onClick DismissError ]
+                [ Html.text message ]
+
+        Nothing ->
+            Html.text ""
+
+
+viewDocument : Model -> Html Msg
+viewDocument model =
+    Html.main_
+        [ Attr.class "doc", Attr.id "doc-pane" ]
+        [ when model.current is
+            Just doc ->
+                viewNode (anchoredQuotes model.threads) doc.root
+
+            Nothing ->
+                Html.p [ Attr.class "empty" ] [ Html.text "Select a document." ]
+        ]
+
+
+{-| Quotes of open threads, used to mark the commented passages in the prose.
+-}
+anchoredQuotes : Array Thread -> Array String
+anchoredQuotes threads =
+    threads
+        |> Array.keepIf (\thread -> thread.status /= Resolved)
+        |> Array.map (\thread -> thread.anchor.quote)
+        |> Array.keepIf (\quote -> not (String.isEmpty quote))
+
+
+-- DOCUMENT RENDERING
+
+
+viewNode : Array String -> Node -> Html Msg
+viewNode quotes node =
+    let
+        kids =
+            Array.map (viewNode quotes) (Doc.children node)
+
+        keyedKids =
+            Array.map
+                (\child -> { key = Doc.id child, node = viewNode quotes child })
+                (Doc.children node)
+    in
+    when Doc.kind node is
+        Document ->
+            Html.Keyed.node "article" (attrs node "prose") keyedKids
+
+        Paragraph ->
+            Html.p (attrs node "") kids
+
+        Heading level ->
+            headingTag level (attrs node "") kids
+
+        CodeBlock code ->
+            Html.pre
+                (attrs node ("code lang-" ++ code.lang))
+                [ Html.code [] [ Html.text code.text ] ]
+
+        BlockQuote ->
+            Html.blockquote (attrs node "") kids
+
+        ListBlock list ->
+            if list.ordered then
+                Html.Keyed.node "ol" (orderedAttrs node list.start) keyedKids
+
+            else
+                Html.Keyed.node "ul" (attrs node "") keyedKids
+
+        ListItem item ->
+            when item.checked is
+                Just isChecked ->
+                    Html.li
+                        (attrs node "task")
+                        (Array.pushFirst (viewCheckbox isChecked) kids)
+
+                Nothing ->
+                    Html.li (attrs node "") kids
+
+        ThematicBreak ->
+            Html.hr (attrs node "") []
+
+        HtmlBlock raw ->
+            -- Raw HTML is shown as source, never injected. A document under
+            -- review can contain anything, and rendering it would hand the page
+            -- over to whatever the author wrote.
+            Html.pre (attrs node "raw-html") [ Html.text raw ]
+
+        Table ->
+            Html.table (attrs node "") kids
+
+        TableRow row ->
+            if row.header then
+                Html.thead [] [ Html.tr (attrs node "") kids ]
+
+            else
+                Html.tbody [] [ Html.tr (attrs node "") kids ]
+
+        TableCell cell ->
+            let
+                cellAttrs =
+                    Array.pushLast (alignStyle cell.align) (attrs node "")
+            in
+            if cell.header then
+                Html.th cellAttrs kids
+
+            else
+                Html.td cellAttrs kids
+
+        Text raw ->
+            Html.span (attrs node "t") (Array.flatten [ highlight quotes raw, kids ])
+
+        Emphasis ->
+            Html.em (attrs node "") kids
+
+        Strong ->
+            Html.strong (attrs node "") kids
+
+        Strikethrough ->
+            Html.node "del" (attrs node "") kids
+
+        CodeSpan raw ->
+            Html.code (attrs node "") (highlight quotes raw)
+
+        Link link ->
+            Html.a
+                (Array.pushLast (Attr.href link.url) (attrs node ""))
+                kids
+
+        Image image ->
+            Html.img
+                (Array.flatten
+                    [ attrs node ""
+                    , [ Attr.src image.url, Attr.alt image.alt, Attr.title image.title ]
+                    ]
+                )
+                []
+
+        LineBreak ->
+            Html.br [] []
+
+        RawHtml raw ->
+            Html.code (attrs node "raw-html") [ Html.text raw ]
+
+
+{-| Every rendered element carries its node id and source span. The selection
+handler in JS reads these to build an anchor; nothing else depends on them.
+-}
+attrs : Node -> String -> Array (Html.Attribute Msg)
+attrs node extraClass =
+    let
+        nodeSpan =
+            Doc.span node
+    in
+    [ Attr.attribute "data-node-id" (Doc.id node)
+    , Attr.attribute "data-span-start" (String.fromInt nodeSpan.start)
+    , Attr.attribute "data-span-end" (String.fromInt nodeSpan.end)
+    , Attr.class extraClass
+    ]
+
+
+orderedAttrs : Node -> Int -> Array (Html.Attribute Msg)
+orderedAttrs node start =
+    if start > 0 then
+        Array.pushLast (Attr.start start) (attrs node "")
+
+    else
+        attrs node ""
+
+
+headingTag : Int -> Array (Html.Attribute Msg) -> Array (Html Msg) -> Html Msg
+headingTag level =
+    when level is
+        1 ->
+            Html.h1
+
+        2 ->
+            Html.h2
+
+        3 ->
+            Html.h3
+
+        4 ->
+            Html.h4
+
+        5 ->
+            Html.h5
+
+        _ ->
+            Html.h6
+
+
+viewCheckbox : Bool -> Html Msg
+viewCheckbox isChecked =
+    Html.input
+        [ Attr.type_ "checkbox"
+        , Attr.checked isChecked
+        , Attr.disabled True
+        ]
+        []
+
+
+alignStyle : Align -> Html.Attribute Msg
+alignStyle align =
+    when align is
+        AlignLeft ->
+            Attr.style "text-align" "left"
+
+        AlignRight ->
+            Attr.style "text-align" "right"
+
+        AlignCenter ->
+            Attr.style "text-align" "center"
+
+        AlignDefault ->
+            Attr.style "" ""
+
+
+{-| Mark the first commented quote occurring in a run of text, so the reviewer
+can see which passages already carry threads.
+-}
+highlight : Array String -> String -> Array (Html Msg)
+highlight quotes raw =
+    let
+        matching =
+            Array.findFirst (\quote -> String.contains quote raw) quotes
+    in
+    when matching is
+        Just found ->
+            when String.firstIndexOf found.value raw is
+                Just at ->
+                    [ Html.text (String.takeFirst at raw)
+                    , Html.node "mark"
+                        [ Attr.class "anchored" ]
+                        [ Html.text found.value ]
+                    , Html.text (String.dropFirst (at + String.count found.value) raw)
+                    ]
+
+                Nothing ->
+                    [ Html.text raw ]
+
+        Nothing ->
+            [ Html.text raw ]
+
+
+-- SIDEBAR
+
+
+viewSidebar : Model -> Html Msg
+viewSidebar model =
+    Html.aside
+        [ Attr.class "threads" ]
+        (if Array.isEmpty model.threads then
+            [ Html.p
+                [ Attr.class "empty" ]
+                [ Html.text "Select text in the document to comment." ]
+            ]
+
+         else
+            Array.map (viewThread model.replyDrafts) model.threads
+        )
+
+
+viewThread : Dict String String -> Thread -> Html Msg
+viewThread drafts thread =
+    Html.section
+        [ Attr.class ("thread " ++ statusClass thread.status)
+        , Attr.attribute "data-thread-id" thread.id
+        ]
+        [ Html.blockquote [ Attr.class "quote" ] [ Html.text thread.anchor.quote ]
+        , Html.div [ Attr.class "messages" ] (Array.map viewMessage thread.messages)
+        , viewCommitLink thread.commit
+        , viewThreadActions drafts thread
+        ]
+
+
+viewMessage : Protocol.Message -> Html Msg
+viewMessage message =
+    Html.div
+        [ Attr.class
+            (when message.role is
+                User ->
+                    "msg user"
+
+                Assistant ->
+                    "msg assistant"
+            )
+        ]
+        [ Html.text message.text ]
+
+
+viewCommitLink : String -> Html Msg
+viewCommitLink commit =
+    if String.isEmpty commit then
+        Html.text ""
+
+    else
+        Html.div
+            [ Attr.class "commit" ]
+            [ Html.text ("committed " ++ String.takeFirst 8 commit) ]
+
+
+viewThreadActions : Dict String String -> Thread -> Html Msg
+viewThreadActions drafts thread =
+    when thread.status is
+        Thinking ->
+            Html.div [ Attr.class "pending" ] [ Html.text "…" ]
+
+        Resolved ->
+            Html.div [ Attr.class "resolved" ] [ Html.text "resolved" ]
+
+        _ ->
+            Html.div
+                [ Attr.class "actions" ]
+                [ Html.textarea
+                    [ Attr.class "reply"
+                    , Attr.placeholder "Reply…"
+                    , Attr.value (Maybe.withDefault "" (Dict.get thread.id drafts))
+                    , Events.onInput
+                        (\text -> ReplyChanged { threadId = thread.id, text = text })
+                    ]
+                    []
+                , Html.button
+                    [ Events.onClick (SubmitReply thread.id) ]
+                    [ Html.text "Send" ]
+                , Html.button
+                    [ Attr.class "secondary", Events.onClick (ResolveThread thread.id) ]
+                    [ Html.text "Resolve" ]
+                ]
+
+
+statusClass : ThreadStatus -> String
+statusClass status =
+    when status is
+        Open ->
+            "open"
+
+        Thinking ->
+            "thinking"
+
+        Resolved ->
+            "resolved"
+
+        Outdated ->
+            "outdated"
+
+
+-- COMPOSER
+
+
+viewComposer : Maybe { anchor : Anchor, draft : String } -> Html Msg
+viewComposer composing =
+    when composing is
+        Nothing ->
+            Html.text ""
+
+        Just active ->
+            Html.div
+                [ Attr.class "composer" ]
+                [ Html.blockquote
+                    [ Attr.class "quote" ]
+                    [ Html.text active.anchor.quote ]
+                , Html.textarea
+                    [ Attr.placeholder "reword this / why this? / …"
+                    , Attr.value active.draft
+                    , Attr.autofocus True
+                    , Events.onInput DraftChanged
+                    ]
+                    []
+                , Html.div
+                    [ Attr.class "composer-actions" ]
+                    [ Html.button [ Events.onClick SubmitComment ] [ Html.text "Comment" ]
+                    , Html.button
+                        [ Attr.class "secondary", Events.onClick CancelComment ]
+                        [ Html.text "Cancel" ]
+                    ]
+                ]
+
+
+-- MAIN
+
+
+main : Program {} Model Msg
+main =
+    Browser.element
+        { init = init
+        , update = update
+        , view = view
+        , subscriptions = subscriptions
+        }

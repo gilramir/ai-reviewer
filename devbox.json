@@ -1,0 +1,28 @@
+{
+  "$schema": "https://raw.githubusercontent.com/jetify-com/devbox/0.18.0/.schema/devbox.schema.json",
+  "packages": [
+    "go@1.25",
+    "gren@0.6.6",
+    "git@latest",
+    "nodejs@22"
+  ],
+  "shell": {
+    "init_hook": [
+      "echo 'ai-reviewer: run `make tools` to check the toolchain, `make` to build.'"
+    ],
+    "scripts": {
+      "build": [
+        "make"
+      ],
+      "test": [
+        "make test"
+      ],
+      "check": [
+        "make check"
+      ],
+      "run": [
+        "make run"
+      ]
+    }
+  }
+}

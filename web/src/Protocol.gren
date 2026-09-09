@@ -1,0 +1,261 @@
+module Protocol exposing
+    ( Anchor
+    , Message
+    , Role(..)
+    , ServerMsg(..)
+    , Thread
+    , ThreadStatus(..)
+    , comment
+    , interrupt
+    , openDoc
+    , reply
+    , resolve
+    , serverMsgDecoder
+    )
+
+{-| The wire protocol between the browser and the review daemon.
+
+Both directions are newline-free JSON objects tagged with a `type` field, sent
+over one WebSocket per browser tab. The server is authoritative for everything
+persistent: the client holds no state it could not rebuild from a fresh
+`doc` + `threads` pair.
+
+-}
+
+import Array exposing (Array)
+import Doc exposing (Doc)
+import Json.Decode as Decode exposing (Decoder)
+import Json.Encode as Encode
+
+
+-- ANCHORS
+
+
+{-| Where a comment is attached.
+
+`quote` is the text the reviewer actually selected; `prefix` and `suffix` are
+the surrounding characters. The server re-locates a thread after every edit by
+searching for this triple, which is why the anchor is text rather than byte
+offsets: an edit earlier in the file shifts every offset but leaves the
+surrounding words alone.
+
+`nodeId` is only a hint for the first lookup and for rendering the highlight —
+it is not trusted after the document changes.
+
+-}
+type alias Anchor =
+    { nodeId : String
+    , quote : String
+    , prefix : String
+    , suffix : String
+    }
+
+
+-- THREADS
+
+
+type alias Thread =
+    { id : String
+    , doc : String
+    , anchor : Anchor
+    , status : ThreadStatus
+    , messages : Array Message
+    , commit : String
+    }
+
+
+type ThreadStatus
+    = Open
+    | Thinking
+    | Resolved
+    | Outdated
+
+
+type alias Message =
+    { role : Role
+    , text : String
+    }
+
+
+type Role
+    = User
+    | Assistant
+
+
+-- SERVER -> CLIENT
+
+
+type ServerMsg
+    = DocUpdated Doc
+    | ThreadsUpdated { doc : String, threads : Array Thread }
+    | AssistantDelta { threadId : String, text : String }
+    | TurnEnded { threadId : String, edited : Bool, commit : String }
+    | BusyChanged { doc : String, busy : Bool }
+    | DocList (Array String)
+    | ServerError String
+
+
+serverMsgDecoder : Decoder ServerMsg
+serverMsgDecoder =
+    Decode.field "type" Decode.string
+        |> Decode.andThen serverMsgBody
+
+
+serverMsgBody : String -> Decoder ServerMsg
+serverMsgBody tag =
+    when tag is
+        "doc" ->
+            Decode.map DocUpdated (Decode.field "doc" Doc.decoder)
+
+        "threads" ->
+            Decode.map2
+                (\doc threads -> ThreadsUpdated { doc = doc, threads = threads })
+                (Decode.field "doc" Decode.string)
+                (Decode.field "threads" (Decode.array threadDecoder))
+
+        "assistant" ->
+            Decode.map2
+                (\threadId text -> AssistantDelta { threadId = threadId, text = text })
+                (Decode.field "threadId" Decode.string)
+                (Decode.field "text" Decode.string)
+
+        "turnEnd" ->
+            Decode.map3
+                (\threadId edited commit ->
+                    TurnEnded { threadId = threadId, edited = edited, commit = commit }
+                )
+                (Decode.field "threadId" Decode.string)
+                (Decode.field "edited" Decode.bool)
+                (Decode.oneOf [ Decode.field "commit" Decode.string, Decode.succeed "" ])
+
+        "busy" ->
+            Decode.map2
+                (\doc busy -> BusyChanged { doc = doc, busy = busy })
+                (Decode.field "doc" Decode.string)
+                (Decode.field "busy" Decode.bool)
+
+        "docList" ->
+            Decode.map DocList (Decode.field "docs" (Decode.array Decode.string))
+
+        "error" ->
+            Decode.map ServerError (Decode.field "message" Decode.string)
+
+        _ ->
+            Decode.fail ("unknown server message type: " ++ tag)
+
+
+threadDecoder : Decoder Thread
+threadDecoder =
+    Decode.map6
+        (\threadId doc anchor status messages commit ->
+            { id = threadId
+            , doc = doc
+            , anchor = anchor
+            , status = status
+            , messages = messages
+            , commit = commit
+            }
+        )
+        (Decode.field "id" Decode.string)
+        (Decode.field "doc" Decode.string)
+        (Decode.field "anchor" anchorDecoder)
+        (Decode.field "status" (Decode.map statusFromTag Decode.string))
+        (Decode.field "messages" (Decode.array messageDecoder))
+        (Decode.oneOf [ Decode.field "commit" Decode.string, Decode.succeed "" ])
+
+
+anchorDecoder : Decoder Anchor
+anchorDecoder =
+    Decode.map4
+        (\nodeId quote prefix suffix ->
+            { nodeId = nodeId, quote = quote, prefix = prefix, suffix = suffix }
+        )
+        (Decode.field "nodeId" Decode.string)
+        (Decode.field "quote" Decode.string)
+        (Decode.oneOf [ Decode.field "prefix" Decode.string, Decode.succeed "" ])
+        (Decode.oneOf [ Decode.field "suffix" Decode.string, Decode.succeed "" ])
+
+
+messageDecoder : Decoder Message
+messageDecoder =
+    Decode.map2
+        (\role text -> { role = role, text = text })
+        (Decode.field "role" (Decode.map roleFromTag Decode.string))
+        (Decode.field "text" Decode.string)
+
+
+statusFromTag : String -> ThreadStatus
+statusFromTag tag =
+    when tag is
+        "thinking" ->
+            Thinking
+
+        "resolved" ->
+            Resolved
+
+        "outdated" ->
+            Outdated
+
+        _ ->
+            Open
+
+
+roleFromTag : String -> Role
+roleFromTag tag =
+    when tag is
+        "assistant" ->
+            Assistant
+
+        _ ->
+            User
+
+
+-- CLIENT -> SERVER
+
+
+openDoc : String -> Encode.Value
+openDoc path =
+    tagged "openDoc" [ { key = "path", value = Encode.string path } ]
+
+
+comment : { doc : String, anchor : Anchor, body : String } -> Encode.Value
+comment args =
+    tagged "comment"
+        [ { key = "doc", value = Encode.string args.doc }
+        , { key = "anchor", value = encodeAnchor args.anchor }
+        , { key = "body", value = Encode.string args.body }
+        ]
+
+
+reply : { threadId : String, body : String } -> Encode.Value
+reply args =
+    tagged "reply"
+        [ { key = "threadId", value = Encode.string args.threadId }
+        , { key = "body", value = Encode.string args.body }
+        ]
+
+
+resolve : String -> Encode.Value
+resolve threadId =
+    tagged "resolve" [ { key = "threadId", value = Encode.string threadId } ]
+
+
+interrupt : String -> Encode.Value
+interrupt doc =
+    tagged "interrupt" [ { key = "doc", value = Encode.string doc } ]
+
+
+encodeAnchor : Anchor -> Encode.Value
+encodeAnchor anchor =
+    Encode.object
+        [ { key = "nodeId", value = Encode.string anchor.nodeId }
+        , { key = "quote", value = Encode.string anchor.quote }
+        , { key = "prefix", value = Encode.string anchor.prefix }
+        , { key = "suffix", value = Encode.string anchor.suffix }
+        ]
+
+
+tagged : String -> Array { key : String, value : Encode.Value } -> Encode.Value
+tagged tag fields =
+    Encode.object
+        (Array.pushFirst { key = "type", value = Encode.string tag } fields)

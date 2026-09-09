@@ -1,0 +1,92 @@
+#!/usr/bin/env python3
+"""A stand-in for the claude CLI that speaks the same stream-json protocol.
+
+It exists so the daemon's whole pipeline -- prompt in, tool_use out, edit on
+disk, commit, re-render, frames to the browser -- can be tested without a model
+in the loop. It reads user frames from stdin for as long as stdin stays open,
+exactly as the real CLI does.
+
+Behaviour: a comment containing "reword" rewrites the quoted passage in the
+named file and reports an Edit tool call. Anything else is answered with prose
+and touches nothing.
+"""
+import json
+import os
+import re
+import sys
+
+SESSION = "00000000-0000-4000-8000-000000000000"
+
+
+def emit(obj):
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+
+
+def parse_prompt(text):
+    """Pull the file path and the first quoted block out of a prompt."""
+    path = None
+    match = re.search(r"^File:\s*(.+)$", text, re.M)
+    if match:
+        path = match.group(1).strip()
+
+    quote = None
+    match = re.search(r"selected this passage:\n\n((?:> .*\n)+)", text)
+    if match:
+        quote = "\n".join(line[2:] for line in match.group(1).strip().split("\n"))
+
+    return path, quote
+
+
+def handle(text):
+    emit({"type": "system", "subtype": "init", "session_id": SESSION,
+          "tools": ["Read", "Edit", "Write", "Grep", "Glob"], "mcp_servers": []})
+
+    path, quote = parse_prompt(text)
+    edited = False
+
+    if "reword" in text.lower() and path and quote:
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                src = fh.read()
+            if quote in src:
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write(src.replace(quote, "REWORDED", 1))
+                edited = True
+        except OSError:
+            pass
+
+    if edited:
+        emit({"type": "assistant", "session_id": SESSION, "message": {
+            "role": "assistant", "content": [
+                {"type": "tool_use", "name": "Edit",
+                 "input": {"file_path": os.path.abspath(path)}}]}})
+        reply = "Reworded the passage."
+    else:
+        reply = "Because the original requirement said so."
+
+    emit({"type": "assistant", "session_id": SESSION, "message": {
+        "role": "assistant", "content": [{"type": "text", "text": reply}]}})
+
+    emit({"type": "result", "subtype": "success", "session_id": SESSION,
+          "result": reply, "is_error": False, "total_cost_usd": 0.01})
+
+
+def main():
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            frame = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if frame.get("type") != "user":
+            continue
+        blocks = frame.get("message", {}).get("content", [])
+        text = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
+        handle(text)
+
+
+if __name__ == "__main__":
+    main()
