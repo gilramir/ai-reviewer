@@ -125,6 +125,16 @@ func (r *Review) PublishThreads(docPath string) {
 	r.broadcastThreads(docPath)
 }
 
+// PublishNotices surfaces whatever this review could not load — a state file
+// that had to be moved aside, say. They are sent on every connection rather
+// than once, since the reviewer who needs to see one may open the page long
+// after the daemon started.
+func (r *Review) PublishNotices() {
+	for _, message := range r.Notices() {
+		r.publish(errorFrame{Type: "error", Message: message})
+	}
+}
+
 // PublishError surfaces a message in the browser.
 func (r *Review) PublishError(message string) {
 	r.publish(errorFrame{Type: "error", Message: message})

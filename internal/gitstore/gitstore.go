@@ -42,6 +42,11 @@ type Commit struct {
 
 // History records review turns. Implementations are safe for concurrent use.
 type History interface {
+	// Root is the directory changes are recorded relative to: the repository
+	// top level under git, or the review root outside one. Paths handed to
+	// Record are relative to it, and it is the natural workspace root for
+	// anything else that needs one.
+	Root() string
 	// EnsureBranch puts the working tree on the named branch, creating it from
 	// the current HEAD if it does not exist.
 	EnsureBranch(name string) error
@@ -92,6 +97,10 @@ type gitHistory struct {
 	root string
 	mu   sync.Mutex // the single-writer discipline; see package doc
 }
+
+// Root is the repository top level, which is where every git command runs and
+// what the paths in a Commit are relative to.
+func (g *gitHistory) Root() string { return g.root }
 
 func (g *gitHistory) EnsureBranch(name string) error {
 	g.mu.Lock()
@@ -257,6 +266,10 @@ func newSnapshots(root string) (*snapshots, error) {
 	}
 	return &snapshots{root: root, dir: dir}, nil
 }
+
+// Root is the reviewed directory itself: outside a repository there is nothing
+// wider to anchor to.
+func (s *snapshots) Root() string { return s.root }
 
 // EnsureBranch is a no-op outside git: there is no branch to be on, and
 // refusing to run would make documents outside a repository unreviewable.

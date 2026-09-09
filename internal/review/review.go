@@ -39,7 +39,18 @@ type Options struct {
 
 // Review is safe for concurrent use by every connected browser.
 type Review struct {
-	root   string
+	root string
+	// work is the directory Claude Code runs in and the base every path it is
+	// given or reports is relative to: the repository top level when the
+	// documents live inside one, the review root when they do not.
+	//
+	// It is wider than root on purpose. The CLI's working directory is its file
+	// permission boundary — a document in doc/ cannot read ../src from a
+	// process started in doc/ — and a repository's CLAUDE.md, settings and
+	// sibling sources are exactly the context a question about a document tends
+	// to need. Which files the *browser* can open is a separate question, and
+	// that answer is still root.
+	work   string
 	branch string
 	hist   gitstore.History
 	procs  *claudeproc.Manager
@@ -52,6 +63,7 @@ type Review struct {
 	order    []string            // thread ids, oldest first
 	subs     map[int]chan []byte // subscriber id -> outbound frames
 	nextSub  int
+	notices  []string // things the reviewer must be told about this review
 }
 
 // New prepares a review of root. It does not start watching for file changes;
@@ -78,12 +90,13 @@ func New(opts Options) (*Review, error) {
 
 	r := &Review{
 		root:   root,
+		work:   hist.Root(),
 		branch: opts.Branch,
 		hist:   hist,
 		procs: claudeproc.NewManager(
 			claudeproc.Config{
 				Binary:       opts.ClaudeBinary,
-				WorkDir:      root,
+				WorkDir:      hist.Root(),
 				Model:        opts.Model,
 				SystemPrompt: systemPrompt,
 				MaxBudgetUSD: opts.MaxBudgetUSD,
@@ -114,6 +127,23 @@ func (r *Review) Close() error {
 
 // Root is the directory under review.
 func (r *Review) Root() string { return r.root }
+
+// WorkRoot is where Claude Code runs: the repository holding the documents, or
+// the review root outside a repository.
+func (r *Review) WorkRoot() string { return r.work }
+
+// workspacePath rewrites a review-root-relative document path into one relative
+// to the workspace, which is the form both the model and git understand. The
+// browser keeps using the review-root-relative form; the two differ whenever a
+// review is rooted at a subdirectory of a repository.
+func (r *Review) workspacePath(docPath string) string {
+	full := filepath.Join(r.root, filepath.FromSlash(docPath))
+	rel, err := filepath.Rel(r.work, full)
+	if err != nil {
+		return docPath
+	}
+	return filepath.ToSlash(rel)
+}
 
 // --- documents --------------------------------------------------------------
 
@@ -251,7 +281,7 @@ func (r *Review) Comment(docPath string, anchor Anchor, body string) (*Thread, e
 	r.order = append(r.order, thread.ID)
 	r.mu.Unlock()
 
-	prompt := commentPrompt(docPath, anchor.Quote, blockAround(string(src), at), body)
+	prompt := commentPrompt(r.workspacePath(docPath), anchor.Quote, blockAround(string(src), at), body)
 	go r.runTurn(thread.ID, docPath, prompt, body)
 
 	r.broadcastThreads(docPath)
@@ -381,7 +411,7 @@ func (r *Review) record(docPath string, edited []string, subject, threadID strin
 	ref, err := r.hist.Record(gitstore.Commit{
 		Paths:   paths,
 		Subject: commitSubject(subject),
-		Body:    fmt.Sprintf("Document: %s\nComment: %s", docPath, subject),
+		Body:    fmt.Sprintf("Document: %s\nComment: %s", r.workspacePath(docPath), subject),
 		Trailers: []gitstore.Trailer{
 			{Key: "Review-Thread", Value: threadID},
 		},
@@ -393,16 +423,22 @@ func (r *Review) record(docPath string, edited []string, subject, threadID strin
 	return ref
 }
 
-// relativise converts the paths the model reported into repository-relative
-// ones, dropping anything outside the review root.
+// relativise converts the paths the model reported into workspace-relative
+// ones, dropping anything outside the workspace.
+//
+// Workspace-relative rather than review-root-relative because these paths go
+// straight to `git add`, which runs at the workspace root. A review rooted at
+// docs/ inside a repository would otherwise stage "spec.md" from the repository
+// top level, where no such file exists: the edit lands on disk and the commit
+// that was supposed to record it never happens.
 func (r *Review) relativise(paths []string) []string {
 	var out []string
 	for _, p := range paths {
 		abs := p
 		if !filepath.IsAbs(abs) {
-			abs = filepath.Join(r.root, p)
+			abs = filepath.Join(r.work, p)
 		}
-		rel, err := filepath.Rel(r.root, abs)
+		rel, err := filepath.Rel(r.work, abs)
 		if err != nil || strings.HasPrefix(rel, "..") {
 			continue
 		}
@@ -487,12 +523,30 @@ type persisted struct {
 	Threads  []*Thread         `json:"threads"`
 }
 
+// writeSynced writes a file and waits for the bytes to reach the disk.
+func writeSynced(path string, data []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
+}
+
 func (r *Review) statePath() string {
 	return filepath.Join(r.root, ".ai-reviewer", "state.json")
 }
 
 func (r *Review) load() error {
-	data, err := os.ReadFile(r.statePath())
+	path := r.statePath()
+	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		return nil
 	}
@@ -502,7 +556,22 @@ func (r *Review) load() error {
 
 	var state persisted
 	if err := json.Unmarshal(data, &state); err != nil {
-		// A corrupt state file should not make the documents unreviewable.
+		// The threads in this file are the record of a review, and the first
+		// thing this run would otherwise do is save an empty state over them.
+		// So the file is moved aside, kept whole and hand-recoverable, and the
+		// review continues without it — a bad state file should not make the
+		// documents unreviewable. What it must never be is quiet: the notice
+		// goes to the terminal and to every browser that connects.
+		kept, moveErr := quarantine(path)
+		if moveErr != nil {
+			// Nothing has been lost yet, and continuing would overwrite the
+			// file at the next save. Refuse to start instead.
+			return fmt.Errorf("%s is unreadable (%v) and could not be moved aside: %w", path, err, moveErr)
+		}
+		r.notice(fmt.Sprintf(
+			"%s could not be read (%v), so no comment threads were loaded. "+
+				"The file was kept as %s.",
+			path, err, filepath.Base(kept)))
 		return nil
 	}
 
@@ -511,8 +580,10 @@ func (r *Review) load() error {
 	if state.Sessions != nil {
 		r.sessions = state.Sessions
 	}
+	skipped := 0
 	for _, t := range state.Threads {
 		if t == nil || t.ID == "" {
+			skipped++
 			continue
 		}
 		// A turn cannot survive a restart; anything mid-flight is reopened.
@@ -522,7 +593,41 @@ func (r *Review) load() error {
 		r.threads[t.ID] = t
 		r.order = append(r.order, t.ID)
 	}
+	if skipped > 0 {
+		r.notices = append(r.notices, fmt.Sprintf(
+			"%d thread(s) in %s had no id and were not loaded.", skipped, filepath.Base(path)))
+	}
 	return nil
+}
+
+// quarantine moves a state file aside and reports where it went. The timestamp
+// keeps a second bad start from overwriting what the first one saved.
+func quarantine(path string) (string, error) {
+	base := path + ".corrupt-" + time.Now().UTC().Format("20060102T150405")
+	dest := base
+	for i := 1; ; i++ {
+		if _, err := os.Stat(dest); os.IsNotExist(err) {
+			break
+		}
+		dest = fmt.Sprintf("%s-%d", base, i)
+	}
+	return dest, os.Rename(path, dest)
+}
+
+// notice records something the reviewer has to be told. Notices are rare and
+// never routine: each one means state this daemon could not use.
+func (r *Review) notice(message string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.notices = append(r.notices, message)
+}
+
+// Notices returns what this review could not load. main prints them; the
+// browser shows them on connect.
+func (r *Review) Notices() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.notices...)
 }
 
 func (r *Review) save() error {
@@ -547,10 +652,13 @@ func (r *Review) save() error {
 		return err
 	}
 
-	// Write through a temporary file so a crash mid-save cannot leave the
-	// review with a truncated state file.
+	// Write through a temporary file, flushed to the disk before it is put in
+	// place, so a crash mid-save cannot leave the review with a truncated
+	// state file. Without the flush the rename can land while the contents are
+	// still in the page cache, which is exactly how a state file ends up
+	// half-written and unreadable on the next start.
 	tmp := r.statePath() + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	if err := writeSynced(tmp, data); err != nil {
 		return err
 	}
 	return os.Rename(tmp, r.statePath())

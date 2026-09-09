@@ -1,0 +1,61 @@
+#!/usr/bin/env python3
+"""A claude stand-in for the session tests.
+
+It records the argv of every launch in $ARGV_LOG, one line per launch, and
+reproduces the two ways the real CLI refuses a session id. They are not the same
+shape, which is the point of modelling them here:
+
+    --session-id, id already used   stderr + exit 1, no frames at all
+        Error: Session ID 5f3c... is already in use.
+
+    --resume, id unknown            a well-formed error result frame, exit 0
+        No conversation found with session ID: 5f3c...        (on stderr)
+        {"type":"result","subtype":"error_during_execution","is_error":true,...}
+"""
+import json
+import os
+import sys
+
+argv = sys.argv[1:]
+with open(os.environ["ARGV_LOG"], "a") as log:
+    log.write(" ".join(argv) + "\n")
+if os.environ.get("CWD_LOG"):
+    with open(os.environ["CWD_LOG"], "a") as log:
+        log.write(os.getcwd() + "\n")
+
+
+def flag(name):
+    return argv[argv.index(name) + 1] if name in argv else None
+
+
+used_path = os.environ["USED_IDS"]
+used = set()
+if os.path.exists(used_path):
+    used = set(open(used_path).read().split())
+
+new_id = flag("--session-id")
+if new_id and new_id in used:
+    sys.stderr.write(f"Error: Session ID {new_id} is already in use.\n")
+    sys.exit(1)
+if new_id:
+    with open(used_path, "a") as fh:
+        fh.write(new_id + "\n")
+
+resumed = flag("--resume")
+if resumed and resumed not in used:
+    sys.stderr.write(f"No conversation found with session ID: {resumed}\n")
+    print(json.dumps({"type": "result", "subtype": "error_during_execution",
+                      "session_id": resumed, "is_error": True, "result": "",
+                      "total_cost_usd": 0,
+                      "errors": [f"No conversation found with session ID: {resumed}"]}),
+          flush=True)
+    sys.exit(0)
+
+session = new_id or resumed or "unknown"
+
+for line in sys.stdin:
+    if not line.strip():
+        continue
+    print(json.dumps({"type": "system", "subtype": "init", "session_id": session}), flush=True)
+    print(json.dumps({"type": "result", "subtype": "success", "session_id": session,
+                      "result": "ok", "is_error": False, "total_cost_usd": 0.0}), flush=True)

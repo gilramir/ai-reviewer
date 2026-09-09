@@ -192,7 +192,13 @@ func runServe(_ *argparse.Command, values argparse.Values) error {
 		}
 	}()
 
-	announce(opts.Listen, branchName, rev.Root(), secret, auth == nil)
+	announce(opts.Listen, branchName, rev.Root(), rev.WorkRoot(), secret, auth == nil)
+
+	// Printed after the banner so it is the last thing on screen, not the
+	// first thing scrolled away by it.
+	for _, notice := range rev.Notices() {
+		fmt.Fprintf(os.Stderr, "  warning: %s\n\n", notice)
+	}
 
 	go func() {
 		<-ctx.Done()
@@ -236,9 +242,15 @@ func buildAuth(disabled bool) (*server.Auth, string, error) {
 	return server.NewTokenAuth(secret), secret, nil
 }
 
-func announce(listen, branch, root, secret string, noAuth bool) {
+func announce(listen, branch, root, workRoot, secret string, noAuth bool) {
 	fmt.Printf("\n  ai-reviewer\n\n")
 	fmt.Printf("    reviewing  %s\n", root)
+	// Claude runs at the repository root so it can read what the documents
+	// reference. That is wider than the directory under review, so say so
+	// whenever the two differ rather than leaving it to be discovered.
+	if workRoot != "" && workRoot != root {
+		fmt.Printf("    claude in  %s\n", workRoot)
+	}
 	if branch != "" {
 		fmt.Printf("    branch     %s\n", branch)
 	}

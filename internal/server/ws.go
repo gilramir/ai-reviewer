@@ -54,6 +54,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Everything the browser needs to draw itself, so a reconnect after a
 	// daemon restart recovers without the reviewer touching anything.
 	s.opts.Review.PublishDocList()
+	s.opts.Review.PublishNotices()
 
 	s.readLoop(conn)
 	close(done)

@@ -446,3 +446,239 @@ func TestSessionsDoNotSurviveANewAuth(t *testing.T) {
 		t.Error("a cookie from the previous process was accepted after restart")
 	}
 }
+
+// TestFiledCommentComesBackInThreads pins the acknowledgement the composer
+// waits for. The browser keeps a comment on screen until it sees it in a
+// `threads` frame, so an accepted comment must come back carrying both the
+// quote it was anchored to and the reviewer's own words.
+func TestFiledCommentComesBackInThreads(t *testing.T) {
+	rev, _ := newReview(t)
+
+	const secret = "test-secret-phrase"
+	ts := httptest.NewServer(New(Options{Review: rev, Auth: NewTokenAuth(secret)}))
+	defer ts.Close()
+
+	conn := dialWS(t, ts, login(t, ts, secret), ts.URL)
+	send(t, conn, map[string]any{"type": "openDoc", "path": "spec.md"})
+	waitFor(t, conn, "doc")
+
+	const quote = "Unrelated paragraph."
+	const body = "why is this here?"
+
+	send(t, conn, map[string]any{
+		"type":   "comment",
+		"doc":    "spec.md",
+		"anchor": map[string]any{"nodeId": "n-2", "quote": quote, "prefix": "", "suffix": ""},
+		"body":   body,
+	})
+
+	// Opening a document broadcasts the threads it already has, so the frame
+	// that matters is the first one carrying this comment — exactly the test
+	// the browser applies before it closes the composer.
+	var frame map[string]any
+	for range 5 {
+		frame = waitFor(t, conn, "threads")
+		if threadCarries(frame, quote, body) {
+			return
+		}
+	}
+	t.Errorf("no thread frame matched the comment that was sent: %v", frame["threads"])
+}
+
+// threadCarries mirrors the match the client makes: same anchor quote, and a
+// user message holding the text that was typed.
+func threadCarries(frame map[string]any, quote, body string) bool {
+	threads, _ := frame["threads"].([]any)
+	for _, entry := range threads {
+		thread, _ := entry.(map[string]any)
+		anchor, _ := thread["anchor"].(map[string]any)
+		if anchor["quote"] != quote {
+			continue
+		}
+		messages, _ := thread["messages"].([]any)
+		for _, m := range messages {
+			message, _ := m.(map[string]any)
+			if message["role"] == "user" && message["text"] == body {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// A comment on a passage that is no longer in the file must be refused with an
+// error rather than accepted, since the browser reads that error as "your words
+// are still yours to edit and send again".
+func TestCommentOnAVanishedPassageIsRefused(t *testing.T) {
+	rev, _ := newReview(t)
+
+	const secret = "test-secret-phrase"
+	ts := httptest.NewServer(New(Options{Review: rev, Auth: NewTokenAuth(secret)}))
+	defer ts.Close()
+
+	conn := dialWS(t, ts, login(t, ts, secret), ts.URL)
+	send(t, conn, map[string]any{"type": "openDoc", "path": "spec.md"})
+	waitFor(t, conn, "doc")
+
+	send(t, conn, map[string]any{
+		"type": "comment",
+		"doc":  "spec.md",
+		"anchor": map[string]any{
+			"nodeId": "n-1",
+			"quote":  "a sentence that was edited away while the reviewer typed",
+			"prefix": "",
+			"suffix": "",
+		},
+		"body": "reword this",
+	})
+
+	frame := waitFor(t, conn, "error")
+	if message, _ := frame["message"].(string); !strings.Contains(message, "selected passage") {
+		t.Errorf("error frame = %v, want it to name the missing passage", frame)
+	}
+}
+
+// A state file the daemon could not read is the one thing a reviewer must not
+// miss: their threads are not on screen, and the only clue is this notice.
+// Terminal output is easy to have scrolled past, so it goes to the browser too.
+func TestStateNoticeReachesTheBrowser(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".ai-reviewer"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".ai-reviewer", "state.json"), []byte(`{"threads":[ truncated`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "spec.md"), []byte(testDoc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rev, err := review.New(review.Options{Root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = rev.Close() })
+
+	const secret = "test-secret-phrase"
+	ts := httptest.NewServer(New(Options{Review: rev, Auth: NewTokenAuth(secret)}))
+	defer ts.Close()
+
+	conn := dialWS(t, ts, login(t, ts, secret), ts.URL)
+
+	frame := waitFor(t, conn, "error")
+	message, _ := frame["message"].(string)
+	if !strings.Contains(message, "state.json") || !strings.Contains(message, "kept as") {
+		t.Errorf("notice does not say what happened to the file: %q", message)
+	}
+}
+
+// newReviewInSubdir sets up the ordinary shape: a repository whose documents
+// live in a subdirectory, with the repository's own CLAUDE.md above them.
+func newReviewInSubdir(t *testing.T) (*review.Review, string) {
+	t.Helper()
+
+	repo := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-q", "-b", "main"},
+		{"config", "user.email", "test@example.com"},
+		{"config", "user.name", "Test"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+
+	if err := os.MkdirAll(filepath.Join(repo, "doc"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "doc", "spec.md"), []byte(testDoc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "CLAUDE.md"), []byte("# repository rules\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, repo, "add", ".")
+	gitRun(t, repo, "commit", "-qm", "initial")
+
+	stub, err := filepath.Abs("testdata/fake-claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rev, err := review.New(review.Options{
+		Root:         filepath.Join(repo, "doc"),
+		Branch:       "review/test",
+		ClaudeBinary: stub,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = rev.Close() })
+
+	return rev, repo
+}
+
+// TestReviewOfASubdirectoryStillCommits is the shape most repositories have:
+// documents in doc/ or docs/, the repository root above them. Claude runs at the
+// repository root — that directory is its file-permission boundary, so a doc
+// that references ../src is answerable — and every path it is given or reports
+// is relative to the same place, which is what git needs to stage them.
+//
+// Getting that wrong is quiet in the worst way: the edit lands on disk and the
+// commit meant to record it never happens.
+func TestReviewOfASubdirectoryStillCommits(t *testing.T) {
+	rev, repo := newReviewInSubdir(t)
+
+	if rev.WorkRoot() != repo {
+		t.Errorf("Claude would run in %q, want the repository root %q", rev.WorkRoot(), repo)
+	}
+	if rev.Root() != filepath.Join(repo, "doc") {
+		t.Errorf("review root = %q", rev.Root())
+	}
+
+	const secret = "test-secret-phrase"
+	ts := httptest.NewServer(New(Options{Review: rev, Auth: NewTokenAuth(secret)}))
+	defer ts.Close()
+
+	conn := dialWS(t, ts, login(t, ts, secret), ts.URL)
+
+	// The browser addresses documents relative to the review root, as always.
+	send(t, conn, map[string]any{"type": "openDoc", "path": "spec.md"})
+	waitFor(t, conn, "doc")
+
+	send(t, conn, map[string]any{
+		"type": "comment",
+		"doc":  "spec.md",
+		"anchor": map[string]any{
+			"nodeId": "n-1",
+			"quote":  "The system SHALL retry indefinitely until the operation succeeds.",
+			"prefix": "",
+			"suffix": "",
+		},
+		"body": "reword this",
+	})
+
+	end := waitFor(t, conn, "turnEnd")
+	if commit, _ := end["commit"].(string); commit == "" {
+		t.Fatalf("the edit was not committed: %v", end)
+	}
+
+	updated, err := os.ReadFile(filepath.Join(repo, "doc", "spec.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(updated), "REWORDED") {
+		t.Errorf("document was not edited:\n%s", updated)
+	}
+
+	// The commit must name the file the way the repository does.
+	staged := gitRun(t, repo, "show", "--name-only", "--format=", "HEAD")
+	if staged != "doc/spec.md" {
+		t.Errorf("commit touched %q, want doc/spec.md", staged)
+	}
+	message := gitRun(t, repo, "log", "-1", "--format=%B")
+	if !strings.Contains(message, "Document: doc/spec.md") {
+		t.Errorf("commit body does not name the document as the repository sees it:\n%s", message)
+	}
+}

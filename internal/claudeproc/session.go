@@ -145,7 +145,47 @@ func (s *Session) Ask(ctx context.Context, prompt string, emit func(Event)) (Tur
 		}
 	}
 
-	return s.readTurn(ctx, emit)
+	result, err := s.readTurn(ctx, emit)
+	if err != nil && s.recoverSessionMode(err) {
+		if err := s.ensureStarted(ctx); err != nil {
+			return TurnResult{}, err
+		}
+		if err := s.send(prompt); err != nil {
+			return TurnResult{}, fmt.Errorf("send prompt: %w", err)
+		}
+		return s.readTurn(ctx, emit)
+	}
+	return result, err
+}
+
+// recoverSessionMode turns the CLI's refusal to reuse a session id into the one
+// bit this Session was missing, and reports that the turn is worth retrying.
+//
+// `--session-id` is only accepted for an id the CLI has never seen; every launch
+// after the first must say `--resume`. Which of the two applies is not derivable
+// from the id, and this process learns it by watching for an `init` frame — so a
+// daemon that restarts knows the id (it is persisted) but not that the CLI has
+// already met it, and its first launch is refused:
+//
+//	Error: Session ID 5f3c... is already in use.
+//
+// Persisting the bit alongside the id would only move the problem: an id minted
+// and persisted just before a crash was never handed to the CLI, and would then
+// be resumed just as wrongly. The refusal itself is the reliable signal, so it
+// is what the flag is set from.
+func (s *Session) recoverSessionMode(err error) bool {
+	if err == nil || !strings.Contains(err.Error(), "already in use") {
+		return false
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.everStarted {
+		// Already resuming; the refusal means something else.
+		return false
+	}
+	s.everStarted = true
+	return true
 }
 
 // Interrupt stops an in-flight turn by killing the process. The next Ask
