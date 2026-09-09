@@ -100,16 +100,22 @@ func matchAt(src, quote string, i int) (int, bool) {
 		}
 
 		sc, qc := src[si], quote[qi]
-		if sc == qc {
-			si++
-			qi++
-			continue
-		}
 
-		// A line break in the source is a single space once rendered.
+		// Whitespace is compared as runs, not as bytes, and this has to come
+		// before the equality test below. A selection crossing a soft wrap
+		// inside a list item gives a quote with a bare newline where the source
+		// has a newline and the item's indent; matching the two newlines byte
+		// for byte would leave the indent unconsumed and fail on the next
+		// character.
 		if isSpaceByte(sc) && isSpaceByte(qc) {
 			si = skipSpace(src, si)
 			qi = skipSpace(quote, qi)
+			continue
+		}
+
+		if sc == qc {
+			si++
+			qi++
 			continue
 		}
 

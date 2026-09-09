@@ -107,8 +107,34 @@ html, body {
 
 .prose {
   width: 100%;
-  max-width: 42rem;
+  /* 42rem of text plus the margin the line numbers sit in. */
+  max-width: 45.5rem;
+  padding-left: 3.5rem;
 }
+
+/* Source line numbers, one per top-level block.
+   Generated content on purpose: the numbers never enter textContent, so a
+   selection dragged across a paragraph cannot pick one up and carry it into
+   the quoted anchor a comment is filed with. */
+.prose > [data-line] { position: relative; }
+
+.prose > [data-line]::before {
+  content: attr(data-line);
+  position: absolute;
+  top: 0.3em;
+  right: 100%;
+  margin-right: 1.25rem;
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  line-height: 1;
+  color: var(--muted);
+  opacity: 0.5;
+  user-select: none;
+  -webkit-user-select: none;
+  pointer-events: none;
+}
+
+.prose > [data-line]:hover::before { opacity: 1; }
 
 .prose > * { margin: 0 0 1.1em; }
 .prose h1, .prose h2, .prose h3, .prose h4, .prose h5, .prose h6 {
@@ -192,6 +218,30 @@ mark.anchored {
   overflow: hidden;
 }
 
+/* The wait for a turn to come back. The dots are all present in the DOM and
+   the animation only clips how many are shown, so the row never changes width
+   and nothing below it moves while the model works. */
+.pending { color: var(--muted); }
+
+.pending .dots {
+  display: inline-block;
+  overflow: hidden;
+  vertical-align: bottom;
+  white-space: nowrap;
+  font-family: var(--mono);
+  width: 1ch;
+  animation: dots-grow 2s steps(5, end) infinite;
+}
+
+@keyframes dots-grow {
+  from { width: 1ch; }
+  to { width: 6ch; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pending .dots { width: 5ch; animation: none; }
+}
+
 .msg { white-space: pre-wrap; margin-bottom: 0.5rem; }
 .msg.user { font-weight: 500; }
 .msg.assistant {
@@ -227,6 +277,7 @@ button {
 }
 button.secondary { background: none; color: var(--muted); }
 button:hover { filter: brightness(1.08); }
+button:disabled { opacity: 0.6; cursor: default; filter: none; }
 
 /* ---------------------------------------------------------------- composer */
 
@@ -254,11 +305,22 @@ button:hover { filter: brightness(1.08); }
   overflow: hidden;
 }
 
+/* The passage moved out from under a draft. The words stay put; only the
+   anchor is in doubt, and the server has the last word on that. */
+.composer .stale {
+  margin: 0 0 0.6rem;
+  color: var(--danger);
+  font-size: 0.8125rem;
+}
+
 .composer textarea { width: 100%; }
 .composer-actions { display: flex; gap: 0.4rem; margin-top: 0.5rem; }
 
 @media (max-width: 900px) {
   .body { flex-direction: column; }
+  /* No room for a margin at this width; the numbers would sit on the text. */
+  .prose { padding-left: 0; max-width: 42rem; }
+  .prose > [data-line]::before { display: none; }
   .threads { width: 100%; border-left: none; border-top: 1px solid var(--rule); }
   .composer { right: 1rem; left: 1rem; width: auto; }
 }

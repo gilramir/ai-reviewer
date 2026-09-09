@@ -1,0 +1,245 @@
+module Test.Marks exposing (suites)
+
+{-| Where a commented passage is on the page, and how a run of text is split
+around it.
+
+The fixture below is what `Doc.text` produces for a page like the ones under
+review: markup gone, a soft wrap standing as a single space, and — this is the
+part that catches people — no separator at all between one block and the next.
+
+-}
+
+import Expect
+import Marks
+import Task
+import Test.Runner.UnitNode as U
+
+
+{-| A document as the client sees it: rendered text, no Markdown.
+
+Written as one string per block so the shape of the source it came from stays
+readable, and concatenated with nothing between the blocks because that is what
+`Doc.text` does.
+
+-}
+document : String
+document =
+    -- # gren-tvision documentation
+    "gren-tvision documentation"
+        -- A paragraph. Note "Turbo Vision" occurs here first, so any test that
+        -- expects to find a later occurrence is also testing that a near miss
+        -- does not win.
+        ++ "Turbo Vision terminal UIs, as the Elm architecture. Four documents, and they answer different questions."
+        -- A bullet whose first phrase is a link inside bold: three elements,
+        -- one phrase, and the reader sees none of the markup.
+        ++ "Turbo Vision, from Gren -- what you are programming against."
+        -- A bullet whose prose wraps, and which holds a code span. The wrap is
+        -- the space before "Gren program"; the code span is CLIPBOARD.
+        ++ "Driving a C or C++ library from Gren -- the general problem, of which this binding is one instance. The three doors out of a Gren program and which one is yours, and never the CLIPBOARD selection."
+
+
+plain : Array Char
+plain =
+    Marks.plainText document
+
+
+{-| The text a range covers, which is what the reader sees highlighted.
+-}
+covers : Maybe Marks.Range -> Maybe String
+covers found =
+    Maybe.map (\range -> String.slice range.start range.end document) found
+
+
+expect : Expect.Expectation -> Task.Task String Expect.Expectation
+expect =
+    Task.succeed
+
+
+suites : Array U.Suite
+suites =
+    [ findingAPassage
+    , passagesThatAreNotThere
+    , splittingARun
+    ]
+
+
+{-| A browser hands over the text of a selection. The document is the rendered
+tree's text. The two agree on words and disagree on whitespace, which is the
+whole difficulty.
+-}
+findingAPassage : U.Suite
+findingAPassage =
+    U.suite
+        { name = "Marks.find"
+        , setUpSuite = U.noSuiteFixture
+        , tearDownSuite = U.noTearDown
+        , setUp = U.noFixture
+        , tearDown = U.noTearDown
+        , tests =
+            [ U.test "a quote whose wrap is a newline matches text whose wrap is a space" <| \_ ->
+                -- The reported bug: selecting across a wrapped line inside a
+                -- bullet gave a quote with a bare "\n" in it.
+                expect
+                    (Expect.equal
+                        (Just "The three doors out of a Gren program and which one is yours,")
+                        (covers (Marks.find plain "The three doors out of a\nGren program and which one is yours,"))
+                    )
+            , U.test "a quote inside link and bold markup is found" <| \_ ->
+                expect
+                    (Expect.equal
+                        (Just "Turbo Vision, from Gren")
+                        (covers (Marks.find plain "Turbo Vision, from Gren"))
+                    )
+            , U.test "a quote across a code span is found" <| \_ ->
+                -- The reader selects CLIPBOARD without its backticks, which
+                -- is what the rendered text has too.
+                expect
+                    (Expect.equal
+                        (Just "never the CLIPBOARD selection")
+                        (covers (Marks.find plain "never the CLIPBOARD selection"))
+                    )
+            , U.test "a near miss does not win over the real occurrence" <| \_ ->
+                -- "Turbo Vision" appears three sentences earlier; the match
+                -- has to run past it rather than stop on the prefix.
+                expect
+                    (Expect.equal
+                        (Just 130)
+                        (Maybe.map .start (Marks.find plain "Turbo Vision, from Gren"))
+                    )
+            , U.test "the range ends where the passage ends" <| \_ ->
+                expect
+                    (Expect.equal
+                        (Just 153)
+                        (Maybe.map .end (Marks.find plain "Turbo Vision, from Gren"))
+                    )
+            , U.test "leading and trailing whitespace in a quote is ignored" <| \_ ->
+                expect
+                    (Expect.equal
+                        (Just "Turbo Vision, from Gren")
+                        (covers (Marks.find plain "\n  Turbo Vision, from Gren \n"))
+                    )
+            , U.test "a run of whitespace matches a run of any other whitespace" <| \_ ->
+                expect
+                    (Expect.equal
+                        (Just "one two")
+                        (Maybe.map (\r -> String.slice r.start r.end "one two three")
+                            (Marks.find (Marks.plainText "one two three") "one \n\t two")
+                        )
+                    )
+            ]
+        }
+
+
+passagesThatAreNotThere : U.Suite
+passagesThatAreNotThere =
+    U.suite
+        { name = "Marks.find, when there is nothing to find"
+        , setUpSuite = U.noSuiteFixture
+        , tearDownSuite = U.noTearDown
+        , setUp = U.noFixture
+        , tearDown = U.noTearDown
+        , tests =
+            [ U.test "a passage that was edited away" <| \_ ->
+                expect (Expect.equal Nothing (Marks.find plain "a sentence that is no longer in the document"))
+            , U.test "a blank quote is not a passage" <| \_ ->
+                expect (Expect.equal Nothing (Marks.find plain "   "))
+            , U.test "an empty quote is not a passage" <| \_ ->
+                expect (Expect.equal Nothing (Marks.find plain ""))
+            , U.test "folding never invents whitespace that the document lacks" <| \_ ->
+                -- The document runs the heading straight into the paragraph.
+                expect (Expect.equal Nothing (Marks.find plain "documentation Turbo Vision terminal"))
+            , U.test "folding never joins two words" <| \_ ->
+                expect (Expect.equal Nothing (Marks.find (Marks.plainText "one two three") "onetwo"))
+            , U.test "a selection spanning two blocks is not marked" <| \_ ->
+                -- A known limit, written down rather than left to be
+                -- rediscovered. Blocks are concatenated with nothing between
+                -- them, so a selection across two of them carries a line
+                -- break the document text has no room for. The comment still
+                -- files -- the server searches the source, where the break is
+                -- real -- but the passage is not highlighted on the page.
+                expect (Expect.equal Nothing (Marks.find plain "documentation\nTurbo Vision terminal"))
+            ]
+        }
+
+
+{-| A range is in document coordinates and a run of text knows only where it
+starts, so every case here is about clipping one to the other. That clipping is
+what lets one passage cross from one element into the next.
+-}
+splittingARun : U.Suite
+splittingARun =
+    U.suite
+        { name = "Marks.split"
+        , setUpSuite = U.noSuiteFixture
+        , tearDownSuite = U.noTearDown
+        , setUp = U.noFixture
+        , tearDown = U.noTearDown
+        , tests =
+            [ U.test "a range wholly inside the run" <| \_ ->
+                expect
+                    (Expect.equal
+                        [ { text = "ab", marked = False }
+                        , { text = "cde", marked = True }
+                        , { text = "fg", marked = False }
+                        ]
+                        (Marks.split [ { start = 2, end = 5 } ] 0 "abcdefg")
+                    )
+            , U.test "a range that began in an earlier run" <| \_ ->
+                expect
+                    (Expect.equal
+                        [ { text = "ab", marked = True }, { text = "cdefg", marked = False } ]
+                        (Marks.split [ { start = 0, end = 12 } ] 10 "abcdefg")
+                    )
+            , U.test "a range that continues into a later run" <| \_ ->
+                expect
+                    (Expect.equal
+                        [ { text = "ab", marked = False }, { text = "cdefg", marked = True } ]
+                        (Marks.split [ { start = 12, end = 40 } ] 10 "abcdefg")
+                    )
+            , U.test "a range that swallows the run whole" <| \_ ->
+                expect
+                    (Expect.equal
+                        [ { text = "abcdefg", marked = True } ]
+                        (Marks.split [ { start = 0, end = 100 } ] 10 "abcdefg")
+                    )
+            , U.test "a run no range touches" <| \_ ->
+                expect
+                    (Expect.equal
+                        [ { text = "abcdefg", marked = False } ]
+                        (Marks.split [ { start = 50, end = 60 } ] 10 "abcdefg")
+                    )
+            , U.test "two ranges in one run" <| \_ ->
+                expect
+                    (Expect.equal
+                        [ { text = "a", marked = False }
+                        , { text = "b", marked = True }
+                        , { text = "cd", marked = False }
+                        , { text = "ef", marked = True }
+                        , { text = "g", marked = False }
+                        ]
+                        (Marks.split [ { start = 1, end = 2 }, { start = 4, end = 6 } ] 0 "abcdefg")
+                    )
+            , U.test "a range that ends exactly where the run begins touches nothing" <| \_ ->
+                expect
+                    (Expect.equal
+                        [ { text = "abcdefg", marked = False } ]
+                        (Marks.split [ { start = 5, end = 10 } ] 10 "abcdefg")
+                    )
+            , U.test "an empty run yields no pieces" <| \_ ->
+                expect (Expect.equal [] (Marks.split [ { start = 0, end = 5 } ] 0 ""))
+            , U.test "no ranges at all leaves the run whole" <| \_ ->
+                expect
+                    (Expect.equal
+                        [ { text = "abcdefg", marked = False } ]
+                        (Marks.split [] 10 "abcdefg")
+                    )
+            , U.test "the pieces of a run always rebuild it" <| \_ ->
+                expect
+                    (Expect.equal "abcdefg"
+                        (Array.foldl (\piece acc -> acc ++ piece.text)
+                            ""
+                            (Marks.split [ { start = 11, end = 14 } ] 10 "abcdefg")
+                        )
+                    )
+            ]
+        }

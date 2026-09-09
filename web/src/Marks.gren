@@ -1,0 +1,185 @@
+module Marks exposing
+    ( Piece
+    , Range
+    , find
+    , plainText
+    , split
+    )
+
+{-| Locating a commented passage in the text of a document, and splitting a
+run of that text around the passages found in it.
+
+This is the client's half of anchoring. The server does the same work against
+the Markdown source, where it also has to see past syntax the reader never
+sees; here both sides are already rendered text, so the only thing that differs
+between a quote and the document is how whitespace fell.
+
+A quote is located as a range over the whole document's text rather than inside
+one node, because a passage does not respect the tree: `**[a link](x)**` puts
+three elements inside one sentence, and a line that wraps puts a `<br>` in the
+middle of one. Ranges are in code points, counted the way `Doc.text` produces
+them.
+
+-}
+
+import Array exposing (Array)
+
+
+{-| A half-open range of the document's text.
+-}
+type alias Range =
+    { start : Int
+    , end : Int
+    }
+
+
+{-| A run of text, and whether it falls inside a commented passage.
+-}
+type alias Piece =
+    { text : String
+    , marked : Bool
+    }
+
+
+{-| The document text as the characters `find` searches.
+-}
+plainText : String -> Array Char
+plainText text =
+    String.toArray text
+
+
+{-| The first place a quote occurs, or nothing when the passage is gone.
+
+One range per quote: the reviewer selected one passage, so a phrase that
+repeats is marked where it first appears rather than everywhere it does.
+
+-}
+find : Array Char -> String -> Maybe Range
+find document quote =
+    let
+        needle =
+            String.toArray (String.trim quote)
+    in
+    if Array.isEmpty needle then
+        Nothing
+
+    else
+        searchFrom document needle 0
+
+
+searchFrom : Array Char -> Array Char -> Int -> Maybe Range
+searchFrom document needle at =
+    if at >= Array.length document then
+        Nothing
+
+    else
+        when matchAt document needle at 0 is
+            Just end ->
+                Just { start = at, end = end }
+
+            Nothing ->
+                searchFrom document needle (at + 1)
+
+
+{-| Match the needle at one position, folding whitespace on both sides.
+
+The quote came from a browser selection and the document text from the rendered
+tree, and the two disagree about whitespace: a soft wrap reaches the selection
+as a newline and the tree as a space. Runs of whitespace are therefore compared
+as runs -- one run matches another whatever either is made of -- which is the
+same rule the server applies to the source.
+
+-}
+matchAt : Array Char -> Array Char -> Int -> Int -> Maybe Int
+matchAt document needle si qi =
+    when Array.get qi needle is
+        Nothing ->
+            Just si
+
+        Just nc ->
+            when Array.get si document is
+                Nothing ->
+                    Nothing
+
+                Just dc ->
+                    if isSpace dc && isSpace nc then
+                        matchAt document needle (skipSpace document si) (skipSpace needle qi)
+
+                    else if dc == nc then
+                        matchAt document needle (si + 1) (qi + 1)
+
+                    else
+                        Nothing
+
+
+skipSpace : Array Char -> Int -> Int
+skipSpace chars at =
+    when Array.get at chars is
+        Just c ->
+            if isSpace c then
+                skipSpace chars (at + 1)
+
+            else
+                at
+
+        Nothing ->
+            at
+
+
+isSpace : Char -> Bool
+isSpace c =
+    c == ' ' || c == '\n' || c == '\t' || c == '\r'
+
+
+{-| Split one run of text around the ranges falling inside it.
+
+`base` is where the run starts in the document text, which is what lets ranges
+in document coordinates be applied to a single node's string. A range wider than
+the run is clipped to it: the rest of it belongs to the nodes either side, and
+they will clip their own share of it when the walk reaches them.
+
+The ranges must be sorted by `start`.
+
+-}
+split : Array Range -> Int -> String -> Array Piece
+split ranges base text =
+    let
+        stop =
+            base + String.count text
+    in
+    if String.isEmpty text then
+        []
+
+    else
+        pieces ranges base text stop base []
+
+
+pieces : Array Range -> Int -> String -> Int -> Int -> Array Piece -> Array Piece
+pieces ranges base text stop at acc =
+    if at >= stop then
+        acc
+
+    else
+        when Array.findFirst (\range -> range.end > at && range.start < stop) ranges is
+            Nothing ->
+                Array.pushLast { text = cut base at stop text, marked = False } acc
+
+            Just found ->
+                if found.value.start > at then
+                    pieces ranges base text stop found.value.start <|
+                        Array.pushLast { text = cut base at found.value.start text, marked = False } acc
+
+                else
+                    let
+                        upTo =
+                            min found.value.end stop
+                    in
+                    pieces ranges base text stop upTo <|
+                        Array.pushLast { text = cut base at upTo text, marked = True } acc
+
+
+{-| The slice of a run's text between two document offsets.
+-}
+cut : Int -> Int -> Int -> String -> String
+cut base from to text =
+    String.slice (from - base) (to - base) text

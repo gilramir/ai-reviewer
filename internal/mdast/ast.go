@@ -51,6 +51,12 @@ type Node struct {
 	ID   string `json:"id"`
 	Span Span   `json:"span"`
 
+	// Line is the 1-based source line the node starts on, derived from
+	// Span.Start. The reviewer sees these in the margin, so a model that cites
+	// "line 125" is talking about a place they can find. Zero for the nodes
+	// that have no span of their own.
+	Line int `json:"line,omitempty"`
+
 	// Text carries the literal content of leaf nodes (text, codeSpan,
 	// codeBlock, rawHtml). Empty for everything else.
 	Text string `json:"text,omitempty"`

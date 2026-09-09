@@ -1,6 +1,8 @@
 package mdast
 
 import (
+	"bytes"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -18,16 +20,20 @@ var md = goldmark.New(goldmark.WithExtensions(extension.GFM))
 // Render parses src and returns a Document ready to be pushed to the browser.
 func Render(path string, rev int, src []byte) Document {
 	root := md.Parser().Parse(text.NewReader(src))
-	c := converter{src: src}
+	c := converter{src: src, newlines: newlineOffsets(src)}
 	node, _ := c.convert(root, "n")
 	// The parser gives the document node no lines of its own; the document
 	// always spans the whole file regardless of what its children cover.
 	node.Span = Span{Start: 0, End: len(src)}
+	node.Line = 1
 	return Document{Path: path, Rev: rev, Root: node}
 }
 
 type converter struct {
 	src []byte
+	// newlines holds the offset of every '\n' in src, so turning a byte offset
+	// into a line number is a binary search rather than a rescan per node.
+	newlines []int
 }
 
 // convert walks one goldmark node into our representation. The bool result is
@@ -140,6 +146,7 @@ func (c *converter) convert(n ast.Node, id string) (Node, bool) {
 	}
 
 	out.Span = c.spanOf(n, out.Children)
+	out.Line = c.lineOf(n, out.Span)
 	return out, true
 }
 
@@ -196,6 +203,45 @@ func (c *converter) spanOf(n ast.Node, kids []Node) Span {
 		}
 	}
 	return span
+}
+
+func newlineOffsets(src []byte) []int {
+	var offsets []int
+	for i := 0; ; {
+		j := bytes.IndexByte(src[i:], '\n')
+		if j < 0 {
+			return offsets
+		}
+		i += j + 1
+		offsets = append(offsets, i-1)
+	}
+}
+
+// lineOf resolves the 1-based line a node starts on, or 0 for a node with no
+// span of its own — an autolink, an empty list item — which the client omits
+// rather than mislabelling as line 1.
+//
+// A fenced code block is the one node whose span is not where the reviewer sees
+// it begin: goldmark's lines cover the code, not the fence above it. The margin
+// has to agree with what a text editor would show, so the fence wins.
+func (c *converter) lineOf(n ast.Node, span Span) int {
+	if fenced, ok := n.(*ast.FencedCodeBlock); ok {
+		if fenced.Info != nil {
+			return c.lineAt(fenced.Info.Segment.Start)
+		}
+		if span != (Span{}) {
+			return c.lineAt(span.Start) - 1
+		}
+		return 0
+	}
+	if span == (Span{}) {
+		return 0
+	}
+	return c.lineAt(span.Start)
+}
+
+func (c *converter) lineAt(offset int) int {
+	return sort.SearchInts(c.newlines, offset) + 1
 }
 
 func lineSpan(n ast.Node) (Span, bool) {

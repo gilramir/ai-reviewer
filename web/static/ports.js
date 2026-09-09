@@ -123,7 +123,30 @@
     return range.toString().length;
   }
 
+  // The block's text as a selection would read it. Not textContent: a soft wrap
+  // is a <br>, which contributes a newline to any selection across it and
+  // nothing at all to textContent. Measuring the offset one way and slicing the
+  // other puts the prefix and suffix a character off per line break, which is
+  // what the server scores repeated passages by.
+  function blockText(block) {
+    var range = document.createRange();
+    range.selectNodeContents(block);
+    return range.toString();
+  }
+
+  // A comment being written lives in a textarea outside the document pane, and
+  // a keystroke there is not a change of selection. Deciding that here matters:
+  // an empty anchor closes the composer, so mistaking a keystroke for a
+  // selection throws away whatever the reviewer had typed.
+  function isTyping(el) {
+    if (!el) return false;
+    var tag = el.tagName;
+    return tag === "TEXTAREA" || tag === "INPUT" || el.isContentEditable;
+  }
+
   function captureSelection() {
+    if (isTyping(document.activeElement)) return;
+
     var sel = window.getSelection();
     if (!sel || sel.rangeCount === 0 || sel.isCollapsed) {
       app.ports.selectionIn.send({
@@ -145,7 +168,7 @@
     var quote = sel.toString();
     if (!quote.trim()) return;
 
-    var text = block.textContent;
+    var text = blockText(block);
     var start = offsetWithin(block, range.startContainer, range.startOffset);
     var end = start + quote.length;
 
@@ -168,8 +191,27 @@
     if (pane && pane.contains(event.target)) scheduleCapture();
   });
 
+  // Only the keys that can actually move or extend a selection. The old test
+  // was `event.shiftKey`, which is true of every capital letter and of "?", so
+  // typing punctuation into the comment box read as a collapsed selection and
+  // discarded the draft. Escape is handled in Gren, on the composer itself.
+  var SELECTION_KEYS = {
+    ArrowLeft: true,
+    ArrowRight: true,
+    ArrowUp: true,
+    ArrowDown: true,
+    Home: true,
+    End: true,
+    PageUp: true,
+    PageDown: true,
+    a: true, // select-all, with a modifier
+  };
+
   document.addEventListener("keyup", function (event) {
-    if (event.shiftKey || event.key === "Escape") scheduleCapture();
+    if (isTyping(event.target)) return;
+    if (!Object.prototype.hasOwnProperty.call(SELECTION_KEYS, event.key)) return;
+    if (event.key === "a" && !(event.ctrlKey || event.metaKey)) return;
+    scheduleCapture();
   });
 
   app.ports.clearSelection.subscribe(function () {

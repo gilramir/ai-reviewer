@@ -216,3 +216,50 @@ func TestEmptyDocument(t *testing.T) {
 		t.Errorf("want no children, got %d", len(doc.Root.Children))
 	}
 }
+
+// sourceLine returns the 1-based line n of src.
+func sourceLine(src string, n int) string {
+	lines := strings.Split(src, "\n")
+	if n < 1 || n > len(lines) {
+		return ""
+	}
+	return lines[n-1]
+}
+
+// TestLinesMatchSource is the counterpart to the span test for the margin the
+// reviewer reads: a node's Line must be the line its span actually starts on,
+// because the model cites line numbers and the reviewer has to find them.
+func TestLinesMatchSource(t *testing.T) {
+	doc := Render("sample.md", 1, []byte(sample))
+	src := []byte(sample)
+
+	walk(doc.Root, func(n Node) {
+		if n.Line == 0 {
+			if n.Span != (Span{}) {
+				t.Errorf("%s %s: span %v but no line", n.Kind, n.ID, n.Span)
+			}
+			return
+		}
+		want := 1 + strings.Count(string(src[:n.Span.Start]), "\n")
+		if n.Kind == KindCodeBlock && strings.HasPrefix(sourceLine(sample, want-1), "```") {
+			// A fence is reported at the fence, not at the first line of code.
+			want--
+		}
+		if n.Line != want {
+			t.Errorf("%s %s: line %d, want %d", n.Kind, n.ID, n.Line, want)
+		}
+	})
+}
+
+func TestLineOfEachTopLevelBlock(t *testing.T) {
+	doc := Render("sample.md", 1, []byte(sample))
+	want := []int{1, 3, 5, 8, 10, 14, 18}
+	if len(doc.Root.Children) != len(want) {
+		t.Fatalf("want %d top-level blocks, got %d", len(want), len(doc.Root.Children))
+	}
+	for i, block := range doc.Root.Children {
+		if block.Line != want[i] {
+			t.Errorf("block %d (%s) on line %d, want %d", i, block.Kind, block.Line, want[i])
+		}
+	}
+}

@@ -14,7 +14,12 @@ GOFLAGS ?=
 # nodejs@22. Both targets below skip it rather than fail when it is absent, so a
 # machine without node can still build and test.
 GREN_FORMAT ?= gren-format
-GREN_SRC    ?= web/src
+GREN_SRC    ?= web/src web/tests/src
+
+# The Gren checks run under node, which nothing else in the build needs. They
+# are skipped rather than failed when it is absent, the same trade as the format
+# check above.
+NODE ?= node
 
 # Toolchain downloads are disabled: go.mod pins a floor of $(GO_VERSION), and a
 # silent switch to a different compiler is exactly the drift versions.mk exists
@@ -39,8 +44,20 @@ web-debug:
 	cd web && $(GREN) make Main --output=dist/app.js
 
 .PHONY: test
-test:
+test: web-test
 	$(GO) test ./...
+
+# Tests for the pure part of the client: locating a commented passage in the
+# rendered text, and splitting a run of that text around the passages in it.
+# web/tests is a node application over the same sources, run under
+# gilramir/gren-unit-node; pass arguments through as `make web-test ARGS=-v`.
+.PHONY: web-test
+web-test:
+	@if command -v $(NODE) >/dev/null 2>&1; then \
+	  cd web/tests && $(GREN) make Check --output=app >/dev/null && $(NODE) app $(ARGS); \
+	else \
+	  echo "skipping Gren tests: $(NODE) not on PATH"; \
+	fi
 
 .PHONY: check
 check: test
@@ -71,13 +88,13 @@ run: build
 
 .PHONY: clean
 clean:
-	rm -rf bin web/dist/app.js web/.gren
+	rm -rf bin web/dist/app.js web/.gren web/tests/app web/tests/.gren
 
 # tools reports what is installed against what versions.mk expects, and says how
 # to get each one either way.
 .PHONY: tools
 tools:
-	@printf 'expected  go %s, gren %s, node %s (node only for gren-format)\n\n' \
+	@printf 'expected  go %s, gren %s, node %s (node runs the Gren checks and gren-format)\n\n' \
 	  '$(GO_VERSION)' '$(GREN_VERSION)' '$(NODE_VERSION)'
 	@printf 'go    '; \
 	  if command -v $(GO) >/dev/null 2>&1; then $(GO) version; \
@@ -89,7 +106,7 @@ tools:
 	  if command -v git >/dev/null 2>&1; then git --version; else echo 'MISSING'; fi
 	@printf 'node  '; \
 	  if command -v node >/dev/null 2>&1; then node --version; \
-	  else echo 'absent      devbox: devbox add nodejs@$(NODE_VERSION)   (only needed for gren-format)'; fi
+	  else echo 'absent      devbox: devbox add nodejs@$(NODE_VERSION)   (Gren checks and gren-format)'; fi
 	@printf 'fmt   '; \
 	  if command -v $(GREN_FORMAT) >/dev/null 2>&1; then $(GREN_FORMAT) --version 2>/dev/null || echo present; \
 	  else echo 'absent      devbox: provided by nodejs@22 + npm i -g gren-format   manual: needs node >= 20'; fi

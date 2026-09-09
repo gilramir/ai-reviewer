@@ -9,6 +9,7 @@ module Doc exposing
     , find
     , id
     , kind
+    , line
     , nodeDecoder
     , span
     , text
@@ -54,6 +55,7 @@ type Node
     = Node
         { id : String
         , span : Span
+        , line : Int
         , kind : Kind
         , children : Array Node
         }
@@ -109,6 +111,15 @@ span (Node n) =
 kind : Node -> Kind
 kind (Node n) =
     n.kind
+
+
+{-| The 1-based source line the node starts on, or 0 for the few nodes the
+server could not place (an autolink, an empty list item). Rendered in the margin
+so that a model citing "line 125" points somewhere the reviewer can look.
+-}
+line : Node -> Int
+line (Node n) =
+    n.line
 
 
 children : Node -> Array Node
@@ -183,17 +194,19 @@ decoder =
 
 nodeDecoder : Decoder Node
 nodeDecoder =
-    Decode.map4
-        (\nodeId nodeSpan nodeKind kids ->
+    Decode.map5
+        (\nodeId nodeSpan nodeLine nodeKind kids ->
             Node
                 { id = nodeId
                 , span = nodeSpan
+                , line = nodeLine
                 , kind = nodeKind
                 , children = kids
                 }
         )
         (Decode.field "id" Decode.string)
         (Decode.field "span" spanDecoder)
+        (optionalInt "line")
         kindDecoder
         childrenDecoder
 

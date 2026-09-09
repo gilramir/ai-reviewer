@@ -17,6 +17,7 @@ import Html.Attributes as Attr
 import Html.Events as Events
 import Json.Decode as Decode
 import Json.Encode as Encode
+import Marks exposing (Range)
 import Protocol exposing (Anchor, Role(..), ServerMsg(..), Thread, ThreadStatus(..))
 
 
@@ -64,10 +65,30 @@ type alias Model =
     , current : Maybe Doc
     , threads : Array Thread
     , busy : Bool
-    , composing : Maybe { anchor : Anchor, draft : String }
+    , composing : Maybe Composing
+    , marks : Array Range
     , replyDrafts : Dict String String
     , connection : String
     , error : Maybe String
+    }
+
+
+{-| A comment being written.
+
+Typed words are the one thing in this app the server cannot give back, so the
+composer is only ever closed by the reviewer or by the arrival of the filed
+comment itself. Neither a re-render nor a rejected submission discards it.
+
+`sent` holds the exact text handed to the server while it is unconfirmed, so the
+thread list can be matched against it; `stale` records that the passage was
+edited away underneath the draft.
+
+-}
+type alias Composing =
+    { anchor : Anchor
+    , draft : String
+    , sent : Maybe String
+    , stale : Bool
     }
 
 
@@ -79,6 +100,7 @@ init _ =
         , threads = []
         , busy = False
         , composing = Nothing
+        , marks = []
         , replyDrafts = Dict.empty
         , connection = "connecting"
         , error = Nothing
@@ -120,13 +142,26 @@ update msg model =
             when Decode.decodeValue anchorDecoder raw is
                 Ok anchor ->
                     if String.isEmpty (String.trim anchor.quote) then
-                        stay { model | composing = Nothing }
+                        -- A cleared selection — usually a stray click in the
+                        -- document — closes an untouched composer but never one
+                        -- with words in it. Those go away by Cancel or Escape,
+                        -- which are deliberate.
+                        stay { model | composing = keepIfWritten model.composing }
 
                     else
-                        stay { model | composing = Just { anchor = anchor, draft = "" } }
+                        stay
+                            { model
+                                | composing =
+                                    Just
+                                        { anchor = anchor
+                                        , draft = ""
+                                        , sent = Nothing
+                                        , stale = False
+                                        }
+                            }
 
                 Err _ ->
-                    stay { model | composing = Nothing }
+                    stay { model | composing = keepIfWritten model.composing }
 
         ConnectionState state ->
             stay { model | connection = state }
@@ -147,11 +182,16 @@ update msg model =
         SubmitComment ->
             when { composing = model.composing, doc = model.current } is
                 { composing = Just composing, doc = Just doc } ->
-                    if String.isEmpty (String.trim composing.draft) then
+                    -- The composer stays on screen, holding the text, until a
+                    -- thread carrying this comment comes back. A comment the
+                    -- server refuses — its passage edited away while the
+                    -- reviewer typed — then leaves the words where they are
+                    -- instead of behind an error banner.
+                    if String.isEmpty (String.trim composing.draft) || composing.sent /= Nothing then
                         stay model
 
                     else
-                        { model = { model | composing = Nothing }
+                        { model = { model | composing = Just { composing | sent = Just composing.draft } }
                         , command =
                             Cmd.batch
                                 [ socketOut
@@ -213,17 +253,19 @@ applyServerMsg : ServerMsg -> Model -> { model : Model, command : Cmd Msg }
 applyServerMsg frame model =
     when frame is
         DocUpdated doc ->
-            -- A re-render arriving mid-composition would leave the reviewer
-            -- typing against a quote that may no longer exist, so the composer
-            -- closes. The thread list keeps the anchor either way.
-            stay
-                { model
-                    | current = Just doc
-                    , composing = Nothing
-                }
+            -- An anchor is text rather than offsets, so an edit elsewhere in
+            -- the document leaves it perfectly valid and a re-render is no
+            -- reason to throw a draft away. When the passage itself has gone,
+            -- the composer says so and still keeps the words.
+            stay (afterDocChange doc model)
 
         ThreadsUpdated payload ->
-            stay { model | threads = payload.threads }
+            stay
+                { model
+                    | threads = payload.threads
+                    , marks = marksIn (plainTextOf model.current) payload.threads
+                    , composing = closeIfFiled payload.threads model.composing
+                }
 
         AssistantDelta payload ->
             stay { model | threads = appendDelta payload.threadId payload.text model.threads }
@@ -244,7 +286,97 @@ applyServerMsg frame model =
             stay { model | docs = docs }
 
         ServerError message ->
-            stay { model | error = Just message }
+            -- Whatever went wrong, the comment is not filed: take it out of
+            -- flight so the reviewer can edit and send it again.
+            stay
+                { model
+                    | error = Just message
+                    , composing = Maybe.map (\composing -> { composing | sent = Nothing }) model.composing
+                }
+
+
+keepIfWritten : Maybe Composing -> Maybe Composing
+keepIfWritten composing =
+    when composing is
+        Just active ->
+            if String.isEmpty (String.trim active.draft) then
+                Nothing
+
+            else
+                composing
+
+        Nothing ->
+            Nothing
+
+
+{-| Fold a new render of the document into the model.
+
+The document's plain text is searched here and nowhere else: once to place every
+thread's quote, once to tell a draft whether the passage it was written against
+is still there. Both answers are kept in the model, so drawing a frame never
+searches the document again.
+
+-}
+afterDocChange : Doc -> Model -> Model
+afterDocChange doc model =
+    let
+        plain =
+            Marks.plainText (Doc.text doc.root)
+    in
+    { model
+        | current = Just doc
+        , marks = marksIn plain model.threads
+        , composing =
+            Maybe.map
+                (\composing ->
+                    { composing | stale = Marks.find plain composing.anchor.quote == Nothing }
+                )
+                model.composing
+    }
+
+
+plainTextOf : Maybe Doc -> Array Char
+plainTextOf current =
+    when current is
+        Just doc ->
+            Marks.plainText (Doc.text doc.root)
+
+        Nothing ->
+            []
+
+
+{-| Close the composer once the comment it sent has come back as a thread.
+
+Matching on the text rather than acknowledging the request keeps the client from
+needing request ids: the server broadcasts the thread list as soon as it accepts
+a comment, and a rejected one never appears there.
+
+-}
+closeIfFiled : Array Thread -> Maybe Composing -> Maybe Composing
+closeIfFiled threads composing =
+    when composing is
+        Just active ->
+            when active.sent is
+                Just sent ->
+                    if Array.any (carries active.anchor.quote sent) threads then
+                        Nothing
+
+                    else
+                        composing
+
+                Nothing ->
+                    composing
+
+        Nothing ->
+            Nothing
+
+
+carries : String -> String -> Thread -> Bool
+carries quote body thread =
+    thread.anchor.quote == quote
+        && Array.any
+            (\message -> message.role == User && message.text == body)
+            thread.messages
 
 
 {-| Streamed assistant text arrives in fragments; each one extends the thread's
@@ -394,32 +526,89 @@ viewDocument model =
         [ Attr.class "doc", Attr.id "doc-pane" ]
         [ when model.current is
             Just doc ->
-                viewNode (anchoredQuotes model.threads) doc.root
+                .html (viewNode model.marks 0 doc.root)
 
             Nothing ->
                 Html.p [ Attr.class "empty" ] [ Html.text "Select a document." ]
         ]
 
 
-{-| Quotes of open threads, used to mark the commented passages in the prose.
--}
-anchoredQuotes : Array Thread -> Array String
-anchoredQuotes threads =
-    threads
-        |> Array.keepIf (\thread -> thread.status /= Resolved)
-        |> Array.map (\thread -> thread.anchor.quote)
-        |> Array.keepIf (\quote -> not (String.isEmpty quote))
-
-
 -- DOCUMENT RENDERING
+--
+-- The tree is walked once, carrying the offset the walk has reached in the
+-- document's plain text -- the same text the quotes were located in. That
+-- offset is what lets a highlight span nodes: each leaf splits itself wherever
+-- a range begins or ends, and a range running past the leaf simply continues
+-- into the next one.
 
 
-viewNode : Array String -> Node -> Html Msg
-viewNode quotes node =
+{-| Render a node, and report where the walk has reached.
+-}
+viewNode : Array Range -> Int -> Node -> { html : Html Msg, next : Int }
+viewNode marks offset node =
     let
+        own =
+            markUp marks offset (ownText node)
+
         kids =
-            Array.map (viewNode quotes) (Doc.children node)
+            viewChildren marks own.next node
     in
+    { html = element node own.html kids.html
+    , next = kids.next
+    }
+
+
+viewChildren : Array Range -> Int -> Node -> { html : Array (Html Msg), next : Int }
+viewChildren marks offset node =
+    Array.foldl
+        (\child acc ->
+            let
+                walked =
+                    viewNode marks acc.next child
+            in
+            { html = Array.pushLast walked.html acc.html, next = walked.next }
+        )
+        { html = [], next = offset }
+        (Doc.children node)
+
+
+{-| The text a node contributes itself, before its children.
+
+This has to agree with `Doc.text` exactly, down to the space a line break stands
+for: the offsets counted here index the string the quotes were found in, so a
+node that miscounts moves every highlight after it.
+
+-}
+ownText : Node -> String
+ownText node =
+    when Doc.kind node is
+        Text raw ->
+            raw
+
+        CodeSpan raw ->
+            raw
+
+        CodeBlock code ->
+            code.text
+
+        HtmlBlock raw ->
+            raw
+
+        RawHtml raw ->
+            raw
+
+        LineBreak ->
+            " "
+
+        _ ->
+            ""
+
+
+{-| Assemble one element from its own text and its children, both already
+rendered. Nothing here knows about offsets.
+-}
+element : Node -> Array (Html Msg) -> Array (Html Msg) -> Html Msg
+element node own kids =
     when Doc.kind node is
         Document ->
             -- Html.Keyed would be the natural choice here, and for the lists
@@ -442,7 +631,7 @@ viewNode quotes node =
         CodeBlock code ->
             Html.pre
                 (attrs node ("code lang-" ++ code.lang))
-                [ Html.code [] [ Html.text code.text ] ]
+                [ Html.code [] own ]
 
         BlockQuote ->
             Html.blockquote (attrs node "") kids
@@ -467,11 +656,11 @@ viewNode quotes node =
         ThematicBreak ->
             Html.hr (attrs node "") []
 
-        HtmlBlock raw ->
+        HtmlBlock _ ->
             -- Raw HTML is shown as source, never injected. A document under
             -- review can contain anything, and rendering it would hand the page
             -- over to whatever the author wrote.
-            Html.pre (attrs node "raw-html") [ Html.text raw ]
+            Html.pre (attrs node "raw-html") own
 
         Table ->
             Html.table (attrs node "") kids
@@ -494,8 +683,8 @@ viewNode quotes node =
             else
                 Html.td cellAttrs kids
 
-        Text raw ->
-            Html.span (attrs node "t") (Array.flatten [ highlight quotes raw, kids ])
+        Text _ ->
+            Html.span (attrs node "t") (Array.flatten [ own, kids ])
 
         Emphasis ->
             Html.em (attrs node "") kids
@@ -506,8 +695,8 @@ viewNode quotes node =
         Strikethrough ->
             Html.node "del" (attrs node "") kids
 
-        CodeSpan raw ->
-            Html.code (attrs node "") (highlight quotes raw)
+        CodeSpan _ ->
+            Html.code (attrs node "") own
 
         Link link ->
             Html.a
@@ -524,26 +713,40 @@ viewNode quotes node =
                 []
 
         LineBreak ->
+            -- The space this stands for is counted but not drawn, so a
+            -- highlight crossing a wrap picks up again on the next line.
             Html.br [] []
 
-        RawHtml raw ->
-            Html.code (attrs node "raw-html") [ Html.text raw ]
+        RawHtml _ ->
+            Html.code (attrs node "raw-html") own
 
 
-{-| Every rendered element carries its node id and source span. The selection
-handler in JS reads these to build an anchor; nothing else depends on them.
+{-| Every rendered element carries its node id, source span and source line.
+The selection handler in JS reads the first two to build an anchor; the line is
+drawn in the margin by CSS, which keeps it out of the DOM text the anchor is cut
+from — a number rendered as an element would end up inside quoted passages.
 -}
 attrs : Node -> String -> Array (Html.Attribute Msg)
 attrs node extraClass =
     let
         nodeSpan =
             Doc.span node
+
+        sourceLine =
+            Doc.line node
     in
-    [ Attr.attribute "data-node-id" (Doc.id node)
-    , Attr.attribute "data-span-start" (String.fromInt nodeSpan.start)
-    , Attr.attribute "data-span-end" (String.fromInt nodeSpan.end)
-    , Attr.class extraClass
-    ]
+    Array.flatten
+        [ [ Attr.attribute "data-node-id" (Doc.id node)
+          , Attr.attribute "data-span-start" (String.fromInt nodeSpan.start)
+          , Attr.attribute "data-span-end" (String.fromInt nodeSpan.end)
+          , Attr.class extraClass
+          ]
+        , if sourceLine > 0 then
+            [ Attr.attribute "data-line" (String.fromInt sourceLine) ]
+
+          else
+            []
+        ]
 
 
 orderedAttrs : Node -> Int -> Array (Html.Attribute Msg)
@@ -603,31 +806,33 @@ alignStyle align =
             Attr.style "" ""
 
 
-{-| Mark the first commented quote occurring in a run of text, so the reviewer
-can see which passages already carry threads.
+{-| Render one leaf's text, marked where a commented passage covers it, and
+report where the walk has reached.
 -}
-highlight : Array String -> String -> Array (Html Msg)
-highlight quotes raw =
-    let
-        matching =
-            Array.findFirst (\quote -> String.contains quote raw) quotes
-    in
-    when matching is
-        Just found ->
-            when String.firstIndexOf found.value raw is
-                Just at ->
-                    [ Html.text (String.takeFirst at raw)
-                    , Html.node "mark"
-                        [ Attr.class "anchored" ]
-                        [ Html.text found.value ]
-                    , Html.text (String.dropFirst (at + String.count found.value) raw)
-                    ]
+markUp : Array Range -> Int -> String -> { html : Array (Html Msg), next : Int }
+markUp marks base text =
+    { html = Array.map viewPiece (Marks.split marks base text)
+    , next = base + String.count text
+    }
 
-                Nothing ->
-                    [ Html.text raw ]
 
-        Nothing ->
-            [ Html.text raw ]
+viewPiece : Marks.Piece -> Html Msg
+viewPiece piece =
+    if piece.marked then
+        Html.node "mark" [ Attr.class "anchored" ] [ Html.text piece.text ]
+
+    else
+        Html.text piece.text
+
+
+{-| Where each unresolved thread's quote sits in the document's text.
+-}
+marksIn : Array Char -> Array Thread -> Array Range
+marksIn plain threads =
+    threads
+        |> Array.keepIf (\thread -> thread.status /= Resolved)
+        |> Array.mapAndKeepJust (\thread -> Marks.find plain thread.anchor.quote)
+        |> Array.sortBy .start
 
 
 -- SIDEBAR
@@ -691,7 +896,12 @@ viewThreadActions : Dict String String -> Thread -> Html Msg
 viewThreadActions drafts thread =
     when thread.status is
         Thinking ->
-            Html.div [ Attr.class "pending" ] [ Html.text "…" ]
+            -- The dots are one string with the tail clipped by a CSS animation,
+            -- rather than five elements appearing in turn: the width is then
+            -- fixed and the thread does not twitch while the model thinks.
+            Html.div
+                [ Attr.class "pending", Attr.attribute "aria-label" "waiting for the model" ]
+                [ Html.span [ Attr.class "dots" ] [ Html.text "....." ] ]
 
         Resolved ->
             Html.div [ Attr.class "resolved" ] [ Html.text "resolved" ]
@@ -735,7 +945,7 @@ statusClass status =
 -- COMPOSER
 
 
-viewComposer : Maybe { anchor : Anchor, draft : String } -> Html Msg
+viewComposer : Maybe Composing -> Html Msg
 viewComposer composing =
     when composing is
         Nothing ->
@@ -747,21 +957,63 @@ viewComposer composing =
                 [ Html.blockquote
                     [ Attr.class "quote" ]
                     [ Html.text active.anchor.quote ]
+                , if active.stale then
+                    Html.p
+                        [ Attr.class "stale" ]
+                        [ Html.text "This passage has changed since you selected it." ]
+
+                  else
+                    Html.text ""
                 , Html.textarea
                     [ Attr.placeholder "reword this / why this? / …"
                     , Attr.value active.draft
                     , Attr.autofocus True
                     , Events.onInput DraftChanged
+                    , onEscape CancelComment
                     ]
                     []
                 , Html.div
                     [ Attr.class "composer-actions" ]
-                    [ Html.button [ Events.onClick SubmitComment ] [ Html.text "Comment" ]
+                    [ Html.button
+                        [ Events.onClick SubmitComment
+                        , Attr.disabled (active.sent /= Nothing)
+                        ]
+                        [ Html.text
+                            (if active.sent /= Nothing then
+                                "Sending…"
+
+                             else
+                                "Comment"
+                            )
+                        ]
                     , Html.button
                         [ Attr.class "secondary", Events.onClick CancelComment ]
                         [ Html.text "Cancel" ]
                     ]
                 ]
+
+
+{-| Escape abandons a comment being written.
+
+It lives here rather than in the selection handler in JS, which used to catch it
+by watching every keyup: that handler could not tell Escape from any other key
+pressed with Shift, so typing a "?" into this box looked like a new selection
+and threw the draft away.
+
+-}
+onEscape : Msg -> Html.Attribute Msg
+onEscape msg =
+    Events.on "keydown"
+        (Decode.field "key" Decode.string
+            |> Decode.andThen
+                (\key ->
+                    if key == "Escape" then
+                        Decode.succeed msg
+
+                    else
+                        Decode.fail "not Escape"
+                )
+        )
 
 
 -- MAIN
