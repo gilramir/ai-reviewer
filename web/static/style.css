@@ -193,9 +193,14 @@ html, body {
 .doc {
   flex: 1;
   overflow-y: auto;
-  padding: 3rem 2rem 6rem;
+  /* No padding at the end: see .prose below. */
+  padding: 3rem 2rem 0;
   display: flex;
   justify-content: center;
+  /* Not the default stretch. Stretched, the document is exactly as tall as the
+     pane and everything past the first screenful hangs out of the bottom of its
+     own box -- so nothing put at the end of that box is ever reached. */
+  align-items: flex-start;
 }
 
 .prose {
@@ -203,6 +208,13 @@ html, body {
   /* 42rem of text plus the margin the line numbers sit in. */
   max-width: 45.5rem;
   padding-left: 3.5rem;
+  /* The space after the last line belongs to the document, not to the pane it
+     scrolls in. Chrome leaves a scrollable flex container's end padding out of
+     the scrollable area, so the 6rem this used to have on .doc was 6rem the
+     reader never reached: the last line sat flush against the bottom of the
+     window, or against the shelf on a Chromebook. Here it is part of a box that
+     scrolls, which every browser agrees about. */
+  padding-bottom: 6rem;
 }
 
 /* Source line numbers, one per block the reader sees as a block -- which
