@@ -60,6 +60,11 @@ type Review struct {
 	hist  gitstore.History
 	procs *claudeproc.Manager
 
+	// turns counts the exchanges in flight, so a shutdown can wait for them
+	// rather than leaving one writing state into a directory that is going
+	// away — or, on a real shutdown, losing what it was about to record.
+	turns sync.WaitGroup
+
 	mu       sync.Mutex
 	revs     map[string]int      // document path -> render revision
 	assets   map[string][]string // document path -> files its last render embeds
@@ -157,9 +162,28 @@ func New(opts Options) (*Review, error) {
 }
 
 // Close stops every Claude process and flushes state to disk.
+//
+// Killing the processes first is what makes the wait short: a turn blocked on a
+// model's answer gets an error from a closed pipe instead, and takes only as
+// long as recording that takes. The wait is bounded anyway, since no shutdown
+// should hang on a turn that will not end.
 func (r *Review) Close() error {
 	r.procs.Close()
+	r.waitForTurns(5 * time.Second)
 	return r.save()
+}
+
+func (r *Review) waitForTurns(limit time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		r.turns.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(limit):
+	}
 }
 
 // Root is the directory under review.
@@ -338,6 +362,7 @@ func (r *Review) Comment(docPath string, anchor Anchor, body string) (*Thread, e
 	r.mu.Unlock()
 
 	prompt := commentPrompt(r.workspacePath(docPath), anchor.Quote, blockAround(string(src), at), body)
+	r.turns.Add(1)
 	go r.runTurn(thread.ID, docPath, prompt, body)
 
 	r.broadcastThreads(docPath)
@@ -371,6 +396,7 @@ func (r *Review) Reply(threadID, body string) error {
 		prompt = r.reopenPrompt(docPath, anchor, body)
 	}
 
+	r.turns.Add(1)
 	go r.runTurn(threadID, docPath, prompt, body)
 
 	r.broadcastThreads(docPath)
@@ -439,8 +465,11 @@ func blockAround(src string, at Location) string {
 
 // --- turns ------------------------------------------------------------------
 
-// runTurn drives one exchange and records whatever came of it.
+// runTurn drives one exchange and records whatever came of it. Every caller
+// counts it into r.turns first, and it is this function's job to count it out.
 func (r *Review) runTurn(threadID, docPath, prompt, subject string) {
+	defer r.turns.Done()
+
 	r.setBusy(docPath, 1)
 	defer r.setBusy(docPath, -1)
 

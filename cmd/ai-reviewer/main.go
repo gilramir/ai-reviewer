@@ -7,11 +7,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -27,12 +29,17 @@ import (
 // version is reported by --version.
 const version = "ai-reviewer 0.1.0"
 
+// defaultListen is also how --listen tells "left alone" from "set to loopback
+// on purpose", which is what makes it an error to pass --listen-all as well.
+const defaultListen = "127.0.0.1:8080"
+
 // serveOptions holds the flags for the serve subcommand. argparse fills these
 // in by deriving each field name from its switch, so --max-budget-usd lands in
 // MaxBudgetUsd; the parser fails at startup if a switch has no matching field.
 type serveOptions struct {
 	Root         string
 	Listen       string
+	ListenAll    string
 	Branch       string
 	NoAuth       bool
 	Model        string
@@ -54,9 +61,9 @@ func main() {
 follow-up comments on the same file stay in one conversation. Every turn that
 changes a file is committed to the task branch.
 
-Authentication is on by default. --no-auth is refused unless --listen is a
-loopback address, since that combination would otherwise publish the documents
-to the network without a word.`,
+Authentication is on by default. --no-auth is refused unless the bind address is
+a loopback one, since that combination would otherwise publish the documents to
+the network without a word. --listen-all never is.`,
 	})
 	ap.Version = version
 
@@ -71,7 +78,7 @@ to the network without a word.`,
 func addServeCommand(ap *argparse.ArgumentParser) {
 	opts := &serveOptions{
 		Root:        ".",
-		Listen:      "127.0.0.1:8080",
+		Listen:      defaultListen,
 		Claude:      "claude",
 		IdleTimeout: 30 * time.Minute,
 		MaxLive:     6,
@@ -92,7 +99,12 @@ func addServeCommand(ap *argparse.ArgumentParser) {
 	cmd.Add(&argparse.Argument{
 		Switches: []string{"--listen"},
 		MetaVar:  "ADDR",
-		Help:     "Address to bind; use 0.0.0.0:8080 to reach it from the LAN",
+		Help:     "Address to bind",
+	})
+	cmd.Add(&argparse.Argument{
+		Switches: []string{"--listen-all"},
+		MetaVar:  "PORT",
+		Help:     "Reach it from the LAN: shorthand for --listen 0.0.0.0:PORT",
 	})
 	cmd.Add(&argparse.Argument{
 		Switches: []string{"--branch"},
@@ -101,7 +113,7 @@ func addServeCommand(ap *argparse.ArgumentParser) {
 	})
 	cmd.Add(&argparse.Argument{
 		Switches: []string{"--no-auth"},
-		Help:     "Serve without a password; refused unless --listen is loopback",
+		Help:     "Serve without a password; refused unless the bind address is loopback",
 	})
 	cmd.Add(&argparse.Argument{
 		Switches: []string{"--model"},
@@ -142,11 +154,16 @@ func addPasswordCommand(ap *argparse.ArgumentParser) {
 func runServe(_ *argparse.Command, values argparse.Values) error {
 	opts := values.(*serveOptions)
 
+	listen, err := listenAddress(opts.Listen, opts.ListenAll)
+	if err != nil {
+		return err
+	}
+
 	// Authentication is the default. Disabling it is only coherent when nothing
 	// off this machine can reach the port, and getting that combination wrong
 	// silently publishes the documents to the network.
-	if opts.NoAuth && !server.IsLoopback(opts.Listen) {
-		return fmt.Errorf("--no-auth requires a loopback address; %q is reachable from the network", opts.Listen)
+	if opts.NoAuth && !server.IsLoopback(listen) {
+		return fmt.Errorf("--no-auth requires a loopback address; %q is reachable from the network", listen)
 	}
 
 	if _, err := exec.LookPath(opts.Claude); err != nil {
@@ -178,7 +195,7 @@ func runServe(_ *argparse.Command, values argparse.Values) error {
 	}
 
 	httpServer := &http.Server{
-		Addr:              opts.Listen,
+		Addr:              listen,
 		Handler:           server.New(server.Options{Review: rev, Auth: auth}),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
@@ -192,7 +209,7 @@ func runServe(_ *argparse.Command, values argparse.Values) error {
 		}
 	}()
 
-	announce(opts.Listen, branchName, rev.Root(), rev.WorkRoot(), secret, auth == nil)
+	announce(listen, branchName, rev.Root(), rev.WorkRoot(), secret, auth == nil)
 
 	// Printed after the banner so it is the last thing on screen, not the
 	// first thing scrolled away by it.
@@ -213,6 +230,27 @@ func runServe(_ *argparse.Command, values argparse.Values) error {
 		return err
 	}
 	return nil
+}
+
+// listenAddress settles which address to bind.
+//
+// --listen-all exists because the address people actually want on a LAN is
+// 0.0.0.0:PORT, and typing it correctly matters: a typo in the host half is
+// either a bind error or, worse, a daemon listening somewhere other than where
+// they think. A port on its own cannot be mistyped into a different meaning.
+func listenAddress(listen, listenAll string) (string, error) {
+	if listenAll == "" {
+		return listen, nil
+	}
+	if listen != defaultListen {
+		return "", fmt.Errorf("--listen %q and --listen-all %q both name an address; pass one of them", listen, listenAll)
+	}
+
+	port, err := strconv.Atoi(listenAll)
+	if err != nil || port < 1 || port > 65535 {
+		return "", fmt.Errorf("--listen-all takes a port number from 1 to 65535, not %q; --listen takes the whole address", listenAll)
+	}
+	return net.JoinHostPort("0.0.0.0", strconv.Itoa(port)), nil
 }
 
 // buildAuth chooses between a stored password and a freshly generated secret.

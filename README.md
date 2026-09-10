@@ -95,8 +95,12 @@ ssh -L 8080:localhost:8080 remote-host
 **On a trusted LAN**, Jupyter-style:
 
 ```sh
-ai-reviewer serve --root ./docs --listen 0.0.0.0:8080
+ai-reviewer serve --root ./docs --listen-all 8080
 ```
+
+`--listen-all PORT` is shorthand for `--listen 0.0.0.0:PORT`, which is the
+address anyone serving to a LAN wants and the one it is easiest to fumble. The
+two are refused together, and a port is all it takes.
 
 ```
   ai-reviewer
