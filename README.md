@@ -37,9 +37,16 @@ the two disagreed.
 **Comments anchor to text, not offsets.** A thread stores the quoted passage
 plus the ~48 characters either side. An edit earlier in the file shifts every
 byte offset after it but leaves the surrounding words alone, so anchors survive
-edits that coordinates would not. Re-location tolerates the Markdown syntax the
-browser stripped: a selection of `a quoted caution` still finds
-`a quoted **caution**` in the source.
+edits that coordinates would not.
+
+The passage is looked for in the document *as rendered*, which is the string the
+reviewer selected out of, and the answer is mapped back to bytes through the
+source positions the parser recorded for every run of text. Searching the
+Markdown instead was the first design and it does not work: `**[a guide](x.md)**
+and on` reads as `a guide and on`, and a selection that runs out of the link
+into the words after it cannot be matched by skipping syntax characters, because
+`x.md` is not syntax — it is ordinary text the renderer consumed. Link
+destinations, image alts, entities and HTML tags are all that same problem.
 
 **Nothing classifies the comment.** *"why this?"* wants an answer, *"reword
 this"* wants a change, and plenty of comments want both. The comment is passed

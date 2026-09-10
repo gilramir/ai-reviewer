@@ -610,6 +610,11 @@ func (r *Review) setBusy(docPath string, delta int) {
 // A thread whose passage has vanished is marked outdated rather than deleted:
 // the conversation usually explains why the text is gone.
 func (r *Review) reanchor(docPath string, src string) {
+	// Flattened once for the whole document rather than once per thread: the
+	// parse is the expensive half, and every thread on this document is asking
+	// about the same text.
+	rendered := mdast.Flatten([]byte(src))
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -621,7 +626,7 @@ func (r *Review) reanchor(docPath string, src string) {
 		if thread.Status == StatusResolved || thread.Status == StatusThinking {
 			continue
 		}
-		if _, ok := Locate(src, thread.Anchor); ok {
+		if _, ok := LocateIn(rendered, thread.Anchor); ok {
 			thread.Status = StatusOpen
 		} else {
 			thread.Status = StatusOutdated

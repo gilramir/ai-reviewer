@@ -200,3 +200,95 @@ func TestWhitespaceFoldingDoesNotJoinWords(t *testing.T) {
 		}
 	}
 }
+
+// The bug this was rewritten for. A bullet that opens with a link is the most
+// ordinary shape in a document of links, and a selection running out of the
+// link and into the words after it used to be reported as missing: the matcher
+// walked the source, skipped the `]` and the `(`, and then met the destination,
+// which is ordinary text the renderer ate.
+func TestMatchesOutOfALinkAndIntoTheTextAfterIt(t *testing.T) {
+	const src = `  - **[Turbo Vision, from Gren](widgets.md)** -- what you are programming
+    against. The programming model, the anatomy of the screen.
+`
+	at := locate(t, src, Anchor{Quote: "Turbo Vision, from Gren -- what you are programming"})
+
+	if got := src[at.Start:at.End]; got != "Turbo Vision, from Gren](widgets.md)** -- what you are programming" {
+		t.Errorf("source span = %q", got)
+	}
+}
+
+// The whole bullet, wrap and all, which is what a reviewer selects when they
+// mean "this item".
+func TestMatchesAWholeBulletAcrossItsWrap(t *testing.T) {
+	const src = `  - **[Turbo Vision, from Gren](widgets.md)** -- what you are programming
+    against. The programming model.
+`
+	quote := "Turbo Vision, from Gren -- what you are programming\nagainst. The programming model."
+	at := locate(t, src, Anchor{Quote: quote})
+
+	if got := src[at.Start:at.End]; !strings.HasSuffix(got, "The programming model.") {
+		t.Errorf("source span = %q, want it to reach the end of the bullet", got)
+	}
+}
+
+// An image contributes its alt text to the page but nothing to a selection, and
+// its URL is not on screen at all.
+func TestMatchesAcrossAnImage(t *testing.T) {
+	const src = "Before ![a screenshot of the editor](shots/editor.png) after the picture.\n"
+
+	at := locate(t, src, Anchor{Quote: "Before  after the picture."})
+	if got := src[at.Start:at.End]; got != src[:len(src)-1] {
+		t.Errorf("source span = %q", got)
+	}
+}
+
+// Inline code renders as its contents; the backticks are not on screen.
+func TestMatchesOutOfACodeSpan(t *testing.T) {
+	const src = "Set `Copied.toSystem = False` and nothing reaches the clipboard.\n"
+
+	at := locate(t, src, Anchor{Quote: "Copied.toSystem = False and nothing reaches"})
+	if got := src[at.Start:at.End]; got != "Copied.toSystem = False` and nothing reaches" {
+		t.Errorf("source span = %q", got)
+	}
+}
+
+// A selection that runs from one paragraph into the next carries the blank line
+// between them as whitespace, and the rendered text has one newline there.
+func TestMatchesAcrossTwoBlocks(t *testing.T) {
+	const src = "The first paragraph ends here.\n\nThe second one starts here.\n"
+
+	at := locate(t, src, Anchor{Quote: "ends here.\n\nThe second one"})
+	if got := src[at.Start:at.End]; got != "ends here.\n\nThe second one" {
+		t.Errorf("source span = %q", got)
+	}
+}
+
+// A heading is a block like any other, and its hashes are not on screen.
+func TestMatchesAHeading(t *testing.T) {
+	const src = "# gren-tvision documentation\n\nTurbo Vision terminal UIs.\n"
+
+	at := locate(t, src, Anchor{Quote: "gren-tvision documentation"})
+	if got := src[at.Start:at.End]; got != "gren-tvision documentation" {
+		t.Errorf("source span = %q", got)
+	}
+}
+
+// The passage the hand editor hands back is the source under the selection, so
+// a location that is off by a byte is an edit that eats one.
+func TestSpanIsTheSourceUnderTheSelection(t *testing.T) {
+	const src = "A sentence with **bold words** in the middle of it.\n"
+
+	at := locate(t, src, Anchor{Quote: "bold words"})
+	if got := src[at.Start:at.End]; got != "bold words" {
+		t.Errorf("source span = %q, want the words without their syntax", got)
+	}
+}
+
+func locate(t *testing.T, src string, a Anchor) Location {
+	t.Helper()
+	at, ok := Locate(src, a)
+	if !ok {
+		t.Fatalf("Locate did not find %q", a.Quote)
+	}
+	return at
+}

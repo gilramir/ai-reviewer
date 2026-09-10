@@ -3,6 +3,8 @@ package review
 import (
 	"strings"
 	"unicode"
+
+	"github.com/gilramir/ai-reviewer/internal/mdast"
 )
 
 // Anchor ties a comment to a passage of text.
@@ -30,47 +32,60 @@ type Location struct {
 	End   int
 }
 
-// markupBytes are the characters the renderer consumes, which therefore appear
-// in the source but never in the text the browser handed us. Skipping them lets
-// a quote of "a quoted caution" match a source of "a quoted **caution**".
-const markupBytes = "*_`~[]()\\"
-
 // Locate finds an anchor's quote in src.
 //
-// It tries an exact match first, then a match that tolerates Markdown syntax
-// inside the passage. When a quote occurs more than once, the occurrence whose
-// neighbouring text best matches the recorded prefix and suffix wins, which is
-// what keeps a comment on "the retry policy" attached to the paragraph the
-// reviewer meant rather than the first one mentioning it.
+// The search runs over the document as the browser renders it, not over the
+// Markdown it renders from. Those are different strings, and only one of them
+// is the string the reviewer selected out of: `**[a link](x.md)** and on` is
+// `a link and on` on screen. Matching against the source instead means seeing
+// past the syntax it carries, and syntax is not only punctuation -- a link's
+// destination, an image's alt, an entity, the inside of an HTML tag are all
+// ordinary characters that the renderer consumed. Every one of them used to end
+// a match early and report a passage that is plainly still there as missing.
+//
+// So the parser's own tree answers the question. Each run of rendered text
+// remembers where it came from, the quote is found among the words, and the
+// answer is mapped back to bytes.
 func Locate(src string, a Anchor) (Location, bool) {
+	return LocateIn(mdast.Flatten([]byte(src)), a)
+}
+
+// LocateIn is Locate against a document that has already been flattened, for
+// callers with many anchors to place in one document.
+func LocateIn(rendered mdast.Rendered, a Anchor) (Location, bool) {
 	quote := strings.TrimSpace(a.Quote)
 	if quote == "" {
 		return Location{}, false
 	}
 
-	candidates := findAll(src, quote)
+	candidates := findAll(rendered.Text, quote)
 	if len(candidates) == 0 {
 		return Location{}, false
 	}
-	if len(candidates) == 1 {
-		return candidates[0], true
-	}
 
-	best, bestScore := candidates[0], -1
-	for _, c := range candidates {
-		if score := contextScore(src, c, a); score > bestScore {
-			best, bestScore = c, score
+	best := candidates[0]
+	if len(candidates) > 1 {
+		bestScore := -1
+		for _, candidate := range candidates {
+			if score := contextScore(rendered.Text, candidate, a); score > bestScore {
+				best, bestScore = candidate, score
+			}
 		}
 	}
-	return best, true
+
+	start, end, ok := rendered.Source(best.Start, best.End)
+	if !ok {
+		return Location{}, false
+	}
+	return Location{Start: start, End: end}, true
 }
 
-// findAll returns every position where the quote matches, exactly or modulo
-// Markdown syntax and whitespace folding.
-func findAll(src, quote string) []Location {
+// findAll returns every place the quote occurs in the rendered text, as ranges
+// over that text.
+func findAll(text, quote string) []Location {
 	var out []Location
-	for i := 0; i < len(src); i++ {
-		if end, ok := matchAt(src, quote, i); ok {
+	for i := 0; i < len(text); i++ {
+		if end, ok := matchAt(text, quote, i); ok {
 			out = append(out, Location{Start: i, End: end})
 			// Overlapping matches of the same passage are never distinct
 			// anchors, so resume past this one.
@@ -80,56 +95,42 @@ func findAll(src, quote string) []Location {
 	return out
 }
 
-// matchAt reports whether quote matches src starting at i, allowing the source
-// to contain Markdown syntax the renderer would have removed and to differ in
-// how whitespace is broken across lines.
-func matchAt(src, quote string, i int) (int, bool) {
-	// The match must begin on the passage's own first character. Without this,
-	// a quote of "bold words" would match "**bold words**" starting at the
-	// asterisk, and the highlight would sit two characters to the left of the
-	// text it describes.
-	if len(quote) == 0 || src[i] != quote[0] {
+// matchAt reports whether quote matches text starting at i, allowing the two to
+// differ in how whitespace fell.
+//
+// Whitespace is compared as runs, not as bytes: a soft wrap reaches a browser
+// selection as a newline and reaches this text as the space a line break stands
+// for, and two blocks are separated here by one newline where a selection
+// across them carries two. One run matches another whatever either is made of,
+// which is the same rule the client applies.
+func matchAt(text, quote string, i int) (int, bool) {
+	if len(quote) == 0 || text[i] != quote[0] {
 		return 0, false
 	}
 
-	si, qi := i, 0
+	ti, qi := i, 0
 
 	for qi < len(quote) {
-		if si >= len(src) {
+		if ti >= len(text) {
 			return 0, false
 		}
 
-		sc, qc := src[si], quote[qi]
+		tc, qc := text[ti], quote[qi]
 
-		// Whitespace is compared as runs, not as bytes, and this has to come
-		// before the equality test below. A selection crossing a soft wrap
-		// inside a list item gives a quote with a bare newline where the source
-		// has a newline and the item's indent; matching the two newlines byte
-		// for byte would leave the indent unconsumed and fail on the next
-		// character.
-		if isSpaceByte(sc) && isSpaceByte(qc) {
-			si = skipSpace(src, si)
+		if isSpaceByte(tc) && isSpaceByte(qc) {
+			ti = skipSpace(text, ti)
 			qi = skipSpace(quote, qi)
 			continue
 		}
 
-		if sc == qc {
-			si++
-			qi++
-			continue
+		if tc != qc {
+			return 0, false
 		}
-
-		// Syntax the renderer ate. Only skippable in the source: the quote came
-		// from rendered text and never contains it in this position.
-		if strings.IndexByte(markupBytes, sc) >= 0 {
-			si++
-			continue
-		}
-
-		return 0, false
+		ti++
+		qi++
 	}
 
-	return si, true
+	return ti, true
 }
 
 func skipSpace(s string, i int) int {
@@ -144,11 +145,11 @@ func isSpaceByte(b byte) bool {
 }
 
 // contextScore rates a candidate by how much of the recorded prefix and suffix
-// it still has around it. Comparison is on letters and digits only, so the
-// Markdown syntax between words does not count against a match.
-func contextScore(src string, at Location, a Anchor) int {
-	before := normalise(tail(src[:at.Start], 4*len(a.Prefix)+16))
-	after := normalise(head(src[at.End:], 4*len(a.Suffix)+16))
+// it still has around it. Comparison is on letters and digits only, so a
+// difference in how whitespace fell does not count against a match.
+func contextScore(text string, at Location, a Anchor) int {
+	before := normalise(tail(text[:at.Start], 4*len(a.Prefix)+16))
+	after := normalise(head(text[at.End:], 4*len(a.Suffix)+16))
 
 	return commonSuffix(before, normalise(a.Prefix)) + commonPrefix(after, normalise(a.Suffix))
 }

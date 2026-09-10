@@ -179,10 +179,6 @@ func (c *converter) spanOf(n ast.Node, kids []Node) Span {
 		first, last := r.Segments.At(0), r.Segments.At(r.Segments.Len()-1)
 		return Span{Start: first.Start, End: last.Stop}
 	}
-	// goldmark keeps an AutoLink's segment unexported, so these report a zero
-	// span. The enclosing paragraph still spans correctly, which is the level
-	// comments actually anchor to.
-
 	var (
 		span  Span
 		found bool
@@ -200,6 +196,47 @@ func (c *converter) spanOf(n ast.Node, kids []Node) Span {
 		}
 		if k.Span.End > span.End {
 			span.End = k.Span.End
+		}
+	}
+	if found {
+		return span
+	}
+
+	// A code span keeps its text but not its children -- the client wants one
+	// string, not a tree -- so there are no kids here to take a span from. The
+	// text is still in the source, in the goldmark node this was built from.
+	//
+	// goldmark keeps an AutoLink's segment unexported, so those still report a
+	// zero span. The enclosing paragraph spans correctly, which is what an
+	// anchor falls back to.
+	return textSpan(n)
+}
+
+// textSpan unions the segments of every literal run under a node.
+func textSpan(n ast.Node) Span {
+	var (
+		span  Span
+		found bool
+	)
+	for child := n.FirstChild(); child != nil; child = child.NextSibling() {
+		var seg Span
+		if t, ok := child.(*ast.Text); ok {
+			seg = Span{Start: t.Segment.Start, End: t.Segment.Stop}
+		} else {
+			seg = textSpan(child)
+		}
+		if seg.End <= seg.Start {
+			continue
+		}
+		if !found {
+			span, found = seg, true
+			continue
+		}
+		if seg.Start < span.Start {
+			span.Start = seg.Start
+		}
+		if seg.End > span.End {
+			span.End = seg.End
 		}
 	}
 	return span

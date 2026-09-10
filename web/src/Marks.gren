@@ -9,10 +9,13 @@ module Marks exposing
 {-| Locating a commented passage in the text of a document, and splitting a
 run of that text around the passages found in it.
 
-This is the client's half of anchoring. The server does the same work against
-the Markdown source, where it also has to see past syntax the reader never
-sees; here both sides are already rendered text, so the only thing that differs
-between a quote and the document is how whitespace fell.
+This is the client's half of anchoring, and the server now does the same thing:
+it flattens the tree it parsed back to the text the reader sees and searches
+that. Matching a selection against the Markdown source was the older idea, and
+it could not be made to work -- a link's destination is ordinary text that the
+renderer ate, and no rule about skipping syntax characters gets past it. On both
+sides, then, the only thing that differs between a quote and the document is how
+whitespace fell.
 
 A quote is located as a range over the whole document's text rather than inside
 one node, because a passage does not respect the tree: `**[a link](x)**` puts
