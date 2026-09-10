@@ -205,18 +205,33 @@ html, body {
   padding-left: 3.5rem;
 }
 
-/* Source line numbers, one per top-level block.
+/* Source line numbers, one per block the reader sees as a block -- which
+   includes the items of a list, since a bullet is the unit somebody reads and
+   points at. The list itself is not numbered: its number and its first item's
+   are the same line, drawn on top of each other.
+
    Generated content on purpose: the numbers never enter textContent, so a
    selection dragged across a paragraph cannot pick one up and carry it into
    the quoted anchor a comment is filed with. */
-.prose > [data-line] { position: relative; }
+.prose {
+  --line-gutter: 1.25rem;
+  /* Pinned rather than left to the browser's 40px, because a number in the
+     margin has to be pushed back out by exactly one indent. */
+  --list-indent: 2.5rem;
+}
 
-.prose > [data-line]::before {
+.prose ul, .prose ol { padding-left: var(--list-indent); }
+
+.prose > [data-line]:not(ul):not(ol),
+.prose li[data-line] { position: relative; }
+
+.prose > [data-line]:not(ul):not(ol)::before,
+.prose li[data-line]::before {
   content: attr(data-line);
   position: absolute;
   top: 0.3em;
   right: 100%;
-  margin-right: 1.25rem;
+  margin-right: var(--line-gutter);
   font-family: var(--mono);
   font-size: 0.6875rem;
   line-height: 1;
@@ -227,7 +242,23 @@ html, body {
   pointer-events: none;
 }
 
-.prose > [data-line]:hover::before { opacity: 1; }
+/* An item sits one indent right of the text column, so its number would land on
+   its own bullet. Push it back out to where the others are. */
+.prose li[data-line]::before {
+  margin-right: calc(var(--line-gutter) + var(--list-indent));
+}
+
+.prose li li[data-line]::before {
+  margin-right: calc(var(--line-gutter) + 2 * var(--list-indent));
+}
+
+/* A task item has already been pulled left to make room for its checkbox. */
+.prose li.task[data-line]::before {
+  margin-right: calc(var(--line-gutter) + var(--list-indent) - 1.2rem);
+}
+
+.prose > [data-line]:not(ul):not(ol):hover::before,
+.prose li[data-line]:hover::before { opacity: 1; }
 
 .prose > * { margin: 0 0 1.1em; }
 .prose h1, .prose h2, .prose h3, .prose h4, .prose h5, .prose h6 {
@@ -428,7 +459,7 @@ button:disabled { opacity: 0.6; cursor: default; filter: none; }
   .body { flex-direction: column; }
   /* No room for a margin at this width; the numbers would sit on the text. */
   .prose { padding-left: 0; max-width: 42rem; }
-  .prose > [data-line]::before { display: none; }
+  .prose > [data-line]::before, .prose li[data-line]::before { display: none; }
   .threads { width: 100%; border-left: none; border-top: 1px solid var(--rule); }
   .composer { right: 1rem; left: 1rem; width: auto; }
 }
