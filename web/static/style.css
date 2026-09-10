@@ -18,6 +18,12 @@
   --assistant: light-dark(#f2f4f7, #26252d);
   --danger: light-dark(#a3341f, #e0745c);
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+
+  /* The space after the end of a column that scrolls, so the last line of a
+     document and the last thread beside it both stop short of the bottom of the
+     screen rather than against it. One value, because the two columns end
+     level and would look wrong ending anywhere else. */
+  --end-space: 6rem;
 }
 
 :root[data-theme="light"] { color-scheme: light; }
@@ -214,7 +220,7 @@ html, body {
      reader never reached: the last line sat flush against the bottom of the
      window, or against the shelf on a Chromebook. Here it is part of a box that
      scrolls, which every browser agrees about. */
-  padding-bottom: 6rem;
+  padding-bottom: var(--end-space);
 }
 
 /* Source line numbers, one per block the reader sees as a block -- which
@@ -333,7 +339,9 @@ mark.anchored {
   overflow-y: auto;
   border-left: 1px solid var(--rule);
   background: var(--paper);
-  padding: 1rem;
+  /* A block container, so unlike the document pane this one's end padding is
+     part of what scrolls. */
+  padding: 1rem 1rem var(--end-space);
   font-family: system-ui, sans-serif;
   font-size: 0.875rem;
 }
