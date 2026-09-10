@@ -6,7 +6,9 @@ module Protocol exposing
     , Settings
     , Thread
     , ThreadStatus(..)
+    , applyEdit
     , comment
+    , editSource
     , interrupt
     , openDoc
     , reply
@@ -120,6 +122,8 @@ type ServerMsg
     | BusyChanged { doc : String, busy : Bool }
     | DocList (Array String)
     | SettingsUpdated Settings
+    | EditSource { doc : String, quote : String, text : String }
+    | EditApplied { doc : String, quote : String, commit : String }
     | ServerError String
 
 
@@ -167,6 +171,20 @@ serverMsgBody tag =
 
         "settings" ->
             Decode.map SettingsUpdated (Decode.field "settings" settingsDecoder)
+
+        "editSource" ->
+            Decode.map3
+                (\doc quote text -> EditSource { doc = doc, quote = quote, text = text })
+                (Decode.field "doc" Decode.string)
+                (Decode.field "quote" Decode.string)
+                (Decode.field "text" Decode.string)
+
+        "editApplied" ->
+            Decode.map3
+                (\doc quote commit -> EditApplied { doc = doc, quote = quote, commit = commit })
+                (Decode.field "doc" Decode.string)
+                (Decode.field "quote" Decode.string)
+                (Decode.oneOf [ Decode.field "commit" Decode.string, Decode.succeed "" ])
 
         "error" ->
             Decode.map ServerError (Decode.field "message" Decode.string)
@@ -361,6 +379,41 @@ comment args =
         [ { key = "doc", value = Encode.string args.doc }
         , { key = "anchor", value = encodeAnchor args.anchor }
         , { key = "body", value = Encode.string args.body }
+        ]
+
+
+{-| Ask for the Markdown behind a passage, so the reviewer can change it
+themselves. The rendered text they selected is not it: the syntax was eaten on
+the way to the screen.
+-}
+editSource : { doc : String, anchor : Anchor } -> Encode.Value
+editSource args =
+    tagged "editSource"
+        [ { key = "doc", value = Encode.string args.doc }
+        , { key = "anchor", value = encodeAnchor args.anchor }
+        ]
+
+
+{-| Put the reviewer's own words in place of a passage.
+
+`original` is what the editor was opened on. The server writes the replacement
+only if the passage still reads exactly that way, so an edit the model landed in
+the meantime is refused rather than overwritten.
+
+-}
+applyEdit :
+    { doc : String
+    , anchor : Anchor
+    , original : String
+    , replacement : String
+    }
+    -> Encode.Value
+applyEdit args =
+    tagged "applyEdit"
+        [ { key = "doc", value = Encode.string args.doc }
+        , { key = "anchor", value = encodeAnchor args.anchor }
+        , { key = "original", value = Encode.string args.original }
+        , { key = "replacement", value = Encode.string args.replacement }
         ]
 
 

@@ -381,6 +381,21 @@ button:disabled { opacity: 0.6; cursor: default; filter: none; }
 .composer textarea { width: 100%; }
 .composer-actions { display: flex; gap: 0.4rem; margin-top: 0.5rem; }
 
+/* The reviewer's own edit. Monospaced because it is the Markdown source, not
+   the words as the document reads them: the asterisks have to be visible to be
+   kept. */
+.composer .source {
+  font: 0.8125rem/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  resize: vertical;
+}
+
+.composer .note {
+  margin: 0 0 0.5rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-style: italic;
+}
+
 @media (max-width: 900px) {
   .body { flex-direction: column; }
   /* No room for a margin at this width; the numbers would sit on the text. */

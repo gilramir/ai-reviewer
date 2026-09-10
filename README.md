@@ -138,6 +138,28 @@ The choice is remembered — it goes into `.ai-reviewer/state.json` when you mak
 it, so it survives a restart. `--model` on the command line is the more recent
 decision and outranks it, and then becomes the remembered one.
 
+## Editing it yourself
+
+Not every comment is a question, and some are not even a request: the reviewer
+already has the words they want. **Edit it myself** in the composer hands the
+passage back as Markdown — the source, asterisks and links included, not the
+rendered words the selection was cut from — and Save writes it straight to the
+file. No turn runs, and nothing is spent.
+
+The change lands exactly the way a turn's does: one commit on the same branch,
+the passage in the subject, and a `Review-Edit: hand` trailer that tells it
+apart from what the model wrote.
+
+Two things are refused rather than guessed at. An edit whose passage changed
+underneath it — the model rewrote the sentence while the editor sat open — comes
+back with the words intact, because the server compares the source the editor
+was opened on against what the file says now. And an edit is refused while a
+turn is running on that document: the turn is about to write the file from a
+copy it read before the edit existed, and neither side would notice the other.
+
+**Shift-Enter sends.** In the comment box, in the editor, and in a thread's
+reply box — the same thing as the button beside it.
+
 ## Images and generated diagrams
 
 A document that says `![](flow.png)` gets its image from the review root, over a

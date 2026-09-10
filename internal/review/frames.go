@@ -45,6 +45,26 @@ type docListFrame struct {
 	Docs []string `json:"docs"`
 }
 
+// editSourceFrame hands the browser the Markdown behind a passage it asked to
+// edit. It carries the quote it answers, since every frame goes to every
+// connection and a second tab may have a composer of its own open.
+type editSourceFrame struct {
+	Type  string `json:"type"`
+	Doc   string `json:"doc"`
+	Quote string `json:"quote"`
+	Text  string `json:"text"`
+}
+
+// editAppliedFrame confirms a hand edit. The editor stays on screen until this
+// arrives, for the same reason the composer does: typed words are the one thing
+// the server cannot give back.
+type editAppliedFrame struct {
+	Type   string `json:"type"`
+	Doc    string `json:"doc"`
+	Quote  string `json:"quote"`
+	Commit string `json:"commit,omitempty"`
+}
+
 type errorFrame struct {
 	Type    string `json:"type"`
 	Message string `json:"message"`
@@ -145,6 +165,12 @@ func (r *Review) PublishNotices() {
 // the spend and the running model change.
 func (r *Review) PublishSettings() {
 	r.publish(settingsFrame{Type: "settings", Settings: r.Settings()})
+}
+
+// PublishEditSource sends the Markdown behind a passage to the browser, so the
+// reviewer can change it themselves.
+func (r *Review) PublishEditSource(docPath, quote, text string) {
+	r.publish(editSourceFrame{Type: "editSource", Doc: docPath, Quote: quote, Text: text})
 }
 
 // PublishError surfaces a message in the browser.

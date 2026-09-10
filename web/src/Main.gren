@@ -93,6 +93,28 @@ type alias Composing =
     , draft : String
     , sent : Maybe String
     , stale : Bool
+    , edit : Maybe Editing
+    }
+
+
+{-| A passage the reviewer is rewriting themselves.
+
+Not every comment is a question. When the reviewer already has the words they
+want, a turn spent having the model type them back is slower and paid for by the
+token, so the passage is handed over as Markdown and written straight to the
+file.
+
+`source` is what the server found behind the selection — the browser renders a
+tree it never sees the syntax of, so the words on screen are not what is in the
+file. It is also the compare-and-swap: the server writes the replacement only
+while the passage still reads exactly this way.
+
+-}
+type alias Editing =
+    { source : String
+    , draft : String
+    , ready : Bool
+    , sent : Bool
     }
 
 
@@ -127,6 +149,10 @@ type Msg
     | DraftChanged String
     | SubmitComment
     | CancelComment
+    | StartEdit
+    | EditChanged String
+    | SubmitEdit
+    | CancelEdit
     | ReplyChanged { threadId : String, text : String }
     | SubmitReply String
     | ResolveThread String
@@ -166,6 +192,7 @@ update msg model =
                                         , draft = ""
                                         , sent = Nothing
                                         , stale = False
+                                        , edit = Nothing
                                         }
                             }
 
@@ -219,6 +246,69 @@ update msg model =
 
         CancelComment ->
             { model = { model | composing = Nothing }, command = clearSelection {} }
+
+        StartEdit ->
+            when { composing = model.composing, doc = model.current } is
+                { composing = Just composing, doc = Just doc } ->
+                    { model =
+                        { model
+                            | composing =
+                                Just
+                                    { composing
+                                        | edit =
+                                            Just
+                                                { source = ""
+                                                , draft = ""
+                                                , ready = False
+                                                , sent = False
+                                                }
+                                    }
+                        }
+                    , command =
+                        socketOut
+                            (Protocol.editSource { doc = doc.path, anchor = composing.anchor })
+                    }
+
+                _ ->
+                    stay model
+
+        EditChanged text ->
+            stay
+                { model | composing = mapEdit (\editing -> { editing | draft = text }) model.composing }
+
+        SubmitEdit ->
+            when { composing = model.composing, doc = model.current } is
+                { composing = Just composing, doc = Just doc } ->
+                    when composing.edit is
+                        Just editing ->
+                            -- Sending before the source has arrived would ask
+                            -- the server to swap the passage for nothing.
+                            if not editing.ready || editing.sent then
+                                stay model
+
+                            else
+                                { model = { model | composing = Just { composing | edit = Just { editing | sent = True } } }
+                                , command =
+                                    socketOut
+                                        (Protocol.applyEdit
+                                            { doc = doc.path
+                                            , anchor = composing.anchor
+                                            , original = editing.source
+                                            , replacement = editing.draft
+                                            }
+                                        )
+                                }
+
+                        Nothing ->
+                            stay model
+
+                _ ->
+                    stay model
+
+        CancelEdit ->
+            -- Back to the comment, which still has whatever was typed into it.
+            stay
+                { model | composing = Maybe.map (\composing -> { composing | edit = Nothing }) model.composing }
 
         ReplyChanged change ->
             stay
@@ -316,21 +406,57 @@ applyServerMsg frame model =
         SettingsUpdated settings ->
             stay { model | settings = Just settings }
 
+        EditSource payload ->
+            stay { model | composing = fillSource payload (docPathOf model) model.composing }
+
+        EditApplied payload ->
+            -- The edit is in the file and committed; the editor has nothing
+            -- left to hold on to.
+            if waitingOnEdit payload (docPathOf model) model.composing then
+                { model = { model | composing = Nothing }, command = clearSelection {} }
+
+            else
+                stay model
+
         ServerError message ->
-            -- Whatever went wrong, the comment is not filed: take it out of
-            -- flight so the reviewer can edit and send it again.
+            -- Whatever went wrong, nothing was filed: take what was in flight
+            -- out of it so the reviewer can edit and send it again.
             stay
                 { model
                     | error = Just message
-                    , composing = Maybe.map (\composing -> { composing | sent = Nothing }) model.composing
+                    , composing = Maybe.map afterFailure model.composing
                 }
+
+
+{-| Put a composer back the way it was before it sent anything.
+
+The words are kept — they are the one thing the server cannot give back — but an
+editor still waiting for its source has nothing to show and no way to be
+dismissed, so it steps aside and leaves the comment behind it.
+
+-}
+afterFailure : Composing -> Composing
+afterFailure composing =
+    { composing
+        | sent = Nothing
+        , edit = Maybe.andThen unsend composing.edit
+    }
+
+
+unsend : Editing -> Maybe Editing
+unsend editing =
+    if editing.ready then
+        Just { editing | sent = False }
+
+    else
+        Nothing
 
 
 keepIfWritten : Maybe Composing -> Maybe Composing
 keepIfWritten composing =
     when composing is
         Just active ->
-            if String.isEmpty (String.trim active.draft) then
+            if active.edit == Nothing && String.isEmpty (String.trim active.draft) then
                 Nothing
 
             else
@@ -338,6 +464,83 @@ keepIfWritten composing =
 
         Nothing ->
             Nothing
+
+
+mapEdit : (Editing -> Editing) -> Maybe Composing -> Maybe Composing
+mapEdit fn composing =
+    Maybe.map (\active -> { active | edit = Maybe.map fn active.edit }) composing
+
+
+docPathOf : Model -> String
+docPathOf model =
+    when model.current is
+        Just doc ->
+            doc.path
+
+        Nothing ->
+            ""
+
+
+{-| Take the source the server sent, if this composer is the one that asked.
+
+Every frame goes to every connection, so a source arriving for a passage this
+tab is not editing is ordinary and ignored — as is a second copy of one already
+being edited, which would otherwise throw away what has been typed since.
+
+-}
+fillSource :
+    { doc : String, quote : String, text : String }
+    -> String
+    -> Maybe Composing
+    -> Maybe Composing
+fillSource payload docPath composing =
+    when composing is
+        Just active ->
+            when active.edit is
+                Just editing ->
+                    if editing.ready || payload.doc /= docPath || active.anchor.quote /= payload.quote then
+                        composing
+
+                    else
+                        Just
+                            { active
+                                | edit =
+                                    Just
+                                        { editing
+                                            | source = payload.text
+                                            , draft = payload.text
+                                            , ready = True
+                                        }
+                            }
+
+                Nothing ->
+                    composing
+
+        Nothing ->
+            composing
+
+
+{-| Whether this tab is the one holding the edit that just landed.
+-}
+waitingOnEdit :
+    { doc : String, quote : String, commit : String }
+    -> String
+    -> Maybe Composing
+    -> Bool
+waitingOnEdit payload docPath composing =
+    when composing is
+        Just active ->
+            when active.edit is
+                Just editing ->
+                    editing.sent
+                        && payload.doc == docPath
+                        && active.anchor.quote == payload.quote
+
+                Nothing ->
+                    False
+
+        Nothing ->
+            False
 
 
 {-| Fold a new render of the document into the model.
@@ -1137,6 +1340,7 @@ viewThreadActions drafts thread =
                     , Attr.value (Maybe.withDefault "" (Dict.get thread.id drafts))
                     , Events.onInput
                         (\text -> ReplyChanged { threadId = thread.id, text = text })
+                    , composerKeys { submit = SubmitReply thread.id, cancel = Nothing }
                     ]
                     []
                 , Html.button
@@ -1186,56 +1390,149 @@ viewComposer composing =
 
                   else
                     Html.text ""
-                , Html.textarea
-                    [ Attr.placeholder "reword this / why this? / …"
-                    , Attr.value active.draft
-                    , Attr.autofocus True
-                    , Events.onInput DraftChanged
-                    , onEscape CancelComment
-                    ]
-                    []
-                , Html.div
-                    [ Attr.class "composer-actions" ]
-                    [ Html.button
-                        [ Events.onClick SubmitComment
-                        , Attr.disabled (active.sent /= Nothing)
-                        ]
-                        [ Html.text
-                            (if active.sent /= Nothing then
-                                "Sending…"
+                , when active.edit is
+                    Just editing ->
+                        viewEditor editing
 
-                             else
-                                "Comment"
-                            )
-                        ]
-                    , Html.button
-                        [ Attr.class "secondary", Events.onClick CancelComment ]
-                        [ Html.text "Cancel" ]
-                    ]
+                    Nothing ->
+                        viewCommentForm active
                 ]
 
 
-{-| Escape abandons a comment being written.
+viewCommentForm : Composing -> Html Msg
+viewCommentForm active =
+    Html.div
+        [ Attr.class "form" ]
+        [ Html.textarea
+            [ Attr.placeholder "reword this / why this? / …"
+            , Attr.value active.draft
+            , Attr.autofocus True
+            , Events.onInput DraftChanged
+            , composerKeys { submit = SubmitComment, cancel = Just CancelComment }
+            ]
+            []
+        , Html.div
+            [ Attr.class "composer-actions" ]
+            [ Html.button
+                [ Events.onClick SubmitComment
+                , Attr.disabled (active.sent /= Nothing)
+                ]
+                [ Html.text
+                    (if active.sent /= Nothing then
+                        "Sending…"
 
-It lives here rather than in the selection handler in JS, which used to catch it
-by watching every keyup: that handler could not tell Escape from any other key
-pressed with Shift, so typing a "?" into this box looked like a new selection
-and threw the draft away.
+                     else
+                        "Comment"
+                    )
+                ]
+            , Html.button
+                [ Attr.class "secondary", Events.onClick StartEdit ]
+                [ Html.text "Edit it myself" ]
+            , Html.button
+                [ Attr.class "secondary", Events.onClick CancelComment ]
+                [ Html.text "Cancel" ]
+            ]
+        ]
+
+
+{-| The passage as Markdown, for the reviewer to change by hand.
+
+What is in the box is the source, not the rendered words: an asterisk the
+renderer ate is still an asterisk in the file, and editing the rendered text
+would quietly drop every one of them.
 
 -}
-onEscape : Msg -> Html.Attribute Msg
-onEscape msg =
-    Events.on "keydown"
-        (Decode.field "key" Decode.string
-            |> Decode.andThen
-                (\key ->
-                    if key == "Escape" then
-                        Decode.succeed msg
+viewEditor : Editing -> Html Msg
+viewEditor editing =
+    if not editing.ready then
+        Html.div
+            [ Attr.class "form" ]
+            [ Html.p
+                [ Attr.class "note" ]
+                [ Html.text "Fetching the Markdown behind this passage…" ]
+            , Html.div
+                [ Attr.class "composer-actions" ]
+                [ Html.button
+                    [ Attr.class "secondary", Events.onClick CancelEdit ]
+                    [ Html.text "Cancel" ]
+                ]
+            ]
 
-                    else
-                        Decode.fail "not Escape"
-                )
+    else
+        Html.div
+            [ Attr.class "form" ]
+            [ Html.p
+                [ Attr.class "note" ]
+                [ Html.text "Markdown source. Saving commits it; no model turn runs." ]
+            , Html.textarea
+                [ Attr.class "source"
+                , Attr.rows 5
+                , Attr.spellcheck False
+                , Attr.value editing.draft
+                , Attr.autofocus True
+                , Events.onInput EditChanged
+                , composerKeys { submit = SubmitEdit, cancel = Just CancelEdit }
+                ]
+                []
+            , Html.div
+                [ Attr.class "composer-actions" ]
+                [ Html.button
+                    [ Events.onClick SubmitEdit, Attr.disabled editing.sent ]
+                    [ Html.text
+                        (if editing.sent then
+                            "Saving…"
+
+                         else
+                            "Save"
+                        )
+                    ]
+                , Html.button
+                    [ Attr.class "secondary", Events.onClick CancelEdit ]
+                    [ Html.text "Cancel" ]
+                ]
+            ]
+
+
+{-| The two keys a box of typed words answers to: Shift-Enter sends it, Escape
+abandons it.
+
+Both live here rather than in the selection handler in JS, which used to catch
+Escape by watching every keyup: that handler could not tell Escape from any
+other key pressed with Shift, so typing a "?" into this box looked like a new
+selection and threw the draft away.
+
+Shift-Enter has to preventDefault. Without it the browser puts a newline in the
+box on its way to the send, which is invisible while the box is about to close
+and very visible when the server refuses the frame and the words come back with
+a blank line grown on the end.
+
+-}
+composerKeys : { submit : Msg, cancel : Maybe Msg } -> Html.Attribute Msg
+composerKeys keys =
+    Events.preventDefaultOn "keydown"
+        (Decode.map2
+            (\key shift -> { key = key, shift = shift })
+            (Decode.field "key" Decode.string)
+            (Decode.field "shiftKey" Decode.bool)
+            |> Decode.andThen (keyAction keys)
         )
+
+
+keyAction :
+    { submit : Msg, cancel : Maybe Msg }
+    -> { key : String, shift : Bool }
+    -> Decode.Decoder { message : Msg, preventDefault : Bool }
+keyAction keys event =
+    if event.key == "Enter" && event.shift then
+        Decode.succeed { message = keys.submit, preventDefault = True }
+
+    else
+        when { key = event.key, cancel = keys.cancel } is
+            { key = "Escape", cancel = Just msg } ->
+                Decode.succeed { message = msg, preventDefault = False }
+
+            _ ->
+                Decode.fail "not a composer key"
 
 
 -- MAIN

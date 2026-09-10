@@ -764,6 +764,99 @@ func TestAnUnknownModelIsRefused(t *testing.T) {
 	}
 }
 
+// A reviewer who already has the words they want should not have to spend a
+// turn on them. The whole path — ask for the source, send back a replacement —
+// runs over the same socket and lands as a commit of its own.
+func TestHandEditWritesAndCommits(t *testing.T) {
+	rev, root := newReview(t)
+
+	const secret = "test-secret-phrase"
+	ts := httptest.NewServer(New(Options{Review: rev, Auth: NewTokenAuth(secret)}))
+	defer ts.Close()
+
+	conn := dialWS(t, ts, login(t, ts, secret), ts.URL)
+	send(t, conn, map[string]any{"type": "openDoc", "path": "spec.md"})
+	waitFor(t, conn, "doc")
+
+	const quote = "retry indefinitely until"
+	anchor := map[string]any{"nodeId": "n-2", "quote": quote, "prefix": "", "suffix": ""}
+
+	send(t, conn, map[string]any{"type": "editSource", "doc": "spec.md", "anchor": anchor})
+	frame := waitFor(t, conn, "editSource")
+	source, _ := frame["text"].(string)
+	if source != quote {
+		t.Fatalf("source = %q, want the passage as the file holds it", source)
+	}
+	if frame["quote"] != quote {
+		t.Errorf("the source frame does not name the passage it answers: %v", frame)
+	}
+
+	const replacement = "retry up to five times before"
+	send(t, conn, map[string]any{
+		"type":        "applyEdit",
+		"doc":         "spec.md",
+		"anchor":      anchor,
+		"original":    source,
+		"replacement": replacement,
+	})
+
+	applied := waitFor(t, conn, "editApplied")
+	if commit, _ := applied["commit"].(string); commit == "" {
+		t.Errorf("editApplied carried no commit: %v", applied)
+	}
+
+	after, err := os.ReadFile(filepath.Join(root, "spec.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(after), replacement) {
+		t.Errorf("the document does not carry the edit:\n%s", after)
+	}
+
+	// A hand edit is separable from a turn in the history: nobody's reasoning
+	// is attached to it, and the trailer says so.
+	message := gitRun(t, root, "log", "-1", "--format=%B")
+	if !strings.Contains(message, "Review-Edit: hand") {
+		t.Errorf("commit message does not mark the edit as the reviewer's:\n%s", message)
+	}
+	if !strings.Contains(message, "hand edit of") {
+		t.Errorf("commit subject does not name the passage:\n%s", message)
+	}
+}
+
+// The compare-and-swap over the socket: an editor opened on text that has since
+// moved on is refused, and the reviewer keeps their words to try again.
+func TestHandEditOnStaleSourceIsRefused(t *testing.T) {
+	rev, root := newReview(t)
+
+	const secret = "test-secret-phrase"
+	ts := httptest.NewServer(New(Options{Review: rev, Auth: NewTokenAuth(secret)}))
+	defer ts.Close()
+
+	conn := dialWS(t, ts, login(t, ts, secret), ts.URL)
+	send(t, conn, map[string]any{"type": "openDoc", "path": "spec.md"})
+	waitFor(t, conn, "doc")
+
+	send(t, conn, map[string]any{
+		"type":   "applyEdit",
+		"doc":    "spec.md",
+		"anchor": map[string]any{"nodeId": "n-2", "quote": "retry indefinitely until"},
+		// What the file actually says is "retry indefinitely until".
+		"original":    "retry for a while until",
+		"replacement": "retry twice until",
+	})
+
+	frame := waitFor(t, conn, "error")
+	if message, _ := frame["message"].(string); !strings.Contains(message, "changed while you were editing") {
+		t.Errorf("error frame = %v, want it to say the passage moved on", frame)
+	}
+
+	after, _ := os.ReadFile(filepath.Join(root, "spec.md"))
+	if string(after) != testDoc {
+		t.Errorf("the refused edit reached the file:\n%s", after)
+	}
+}
+
 // The whole reason the file route exists: a document embeds an image, and until
 // this the browser had nowhere to fetch it from.
 func TestEmbeddedImagesAreServed(t *testing.T) {

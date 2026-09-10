@@ -21,6 +21,10 @@ type clientFrame struct {
 	Body     string        `json:"body"`
 	ThreadID string        `json:"threadId"`
 	Model    string        `json:"model"`
+	// Original and Replacement carry a hand edit: the source the reviewer
+	// started from, and what they want in its place.
+	Original    string `json:"original"`
+	Replacement string `json:"replacement"`
 }
 
 const (
@@ -97,6 +101,19 @@ func (s *Server) dispatch(frame clientFrame) {
 
 	case "comment":
 		if _, err := rev.Comment(frame.Doc, frame.Anchor, frame.Body); err != nil {
+			rev.PublishError(err.Error())
+		}
+
+	case "editSource":
+		text, err := rev.SourceOf(frame.Doc, frame.Anchor)
+		if err != nil {
+			rev.PublishError(err.Error())
+			return
+		}
+		rev.PublishEditSource(frame.Doc, frame.Anchor.Quote, text)
+
+	case "applyEdit":
+		if _, err := rev.ApplyEdit(frame.Doc, frame.Anchor, frame.Original, frame.Replacement); err != nil {
 			rev.PublishError(err.Error())
 		}
 
