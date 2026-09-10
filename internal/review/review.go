@@ -57,6 +57,7 @@ type Review struct {
 
 	mu       sync.Mutex
 	revs     map[string]int      // document path -> render revision
+	assets   map[string][]string // document path -> files its last render embeds
 	sessions map[string]string   // document path -> Claude session id
 	inflight map[string]int      // document path -> turns running
 	threads  map[string]*Thread  // thread id -> thread
@@ -114,6 +115,7 @@ func New(opts Options) (*Review, error) {
 			},
 		),
 		revs:     map[string]int{},
+		assets:   map[string][]string{},
 		sessions: map[string]string{},
 		inflight: map[string]int{},
 		threads:  map[string]*Thread{},
@@ -215,7 +217,13 @@ func (r *Review) Render(docPath string) (mdast.Document, error) {
 	rev := r.revs[docPath]
 	r.mu.Unlock()
 
-	return mdast.Render(docPath, rev, src), nil
+	doc := mdast.Render(docPath, rev, src)
+
+	// The images are pointed at the file route and stamped with what is on disk
+	// right now, which is also how a document learns which files it depends on.
+	r.noteAssets(docPath, r.linkAssets(docPath, &doc.Root))
+
+	return doc, nil
 }
 
 func (r *Review) read(docPath string) ([]byte, error) {
@@ -226,26 +234,39 @@ func (r *Review) read(docPath string) ([]byte, error) {
 	return os.ReadFile(full)
 }
 
-// resolve turns a client-supplied path into an absolute one, refusing anything
-// that escapes the review root. Every path in a request is attacker-controlled
-// once the daemon listens on a network interface.
+// resolve turns a client-supplied document path into an absolute one.
 func (r *Review) resolve(docPath string) (string, error) {
-	if docPath == "" {
-		return "", fmt.Errorf("empty document path")
-	}
-	clean := filepath.Clean(filepath.FromSlash(docPath))
-	if filepath.IsAbs(clean) || strings.HasPrefix(clean, "..") {
-		return "", fmt.Errorf("path %q is outside the review root", docPath)
-	}
-	full := filepath.Join(r.root, clean)
-	rel, err := filepath.Rel(r.root, full)
-	if err != nil || strings.HasPrefix(rel, "..") {
-		return "", fmt.Errorf("path %q is outside the review root", docPath)
+	full, err := r.resolvePath(docPath)
+	if err != nil {
+		return "", err
 	}
 	if !isMarkdown(full) {
 		return "", fmt.Errorf("%q is not a Markdown document", docPath)
 	}
 	return full, nil
+}
+
+// resolvePath turns a client-supplied path into an absolute one, refusing
+// anything that escapes the review root. Every path in a request is
+// attacker-controlled once the daemon listens on a network interface.
+func (r *Review) resolvePath(p string) (string, error) {
+	if p == "" {
+		return "", fmt.Errorf("empty path")
+	}
+	clean := filepath.Clean(filepath.FromSlash(p))
+	if filepath.IsAbs(clean) || strings.HasPrefix(clean, "..") {
+		return "", errOutsideRoot(p)
+	}
+	full := filepath.Join(r.root, clean)
+	rel, err := filepath.Rel(r.root, full)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return "", errOutsideRoot(p)
+	}
+	return full, nil
+}
+
+func errOutsideRoot(p string) error {
+	return fmt.Errorf("path %q is outside the review root", p)
 }
 
 // --- threads ----------------------------------------------------------------

@@ -49,6 +49,7 @@ func New(opts Options) *Server {
 	s.mux.Handle("/ws", s.protect(http.HandlerFunc(s.handleWebSocket)))
 	s.mux.Handle("/static/", s.protect(http.StripPrefix("/static/", http.FileServer(http.FS(web.Static())))))
 	s.mux.Handle("/dist/", s.protect(http.StripPrefix("/dist/", http.FileServer(http.FS(web.Dist())))))
+	s.mux.Handle(review.AssetRoute, s.protect(http.HandlerFunc(s.handleFile)))
 	s.mux.Handle("/", s.protect(http.HandlerFunc(s.handleIndex)))
 
 	return s

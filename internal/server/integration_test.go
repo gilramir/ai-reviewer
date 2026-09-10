@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -760,5 +761,97 @@ func TestAnUnknownModelIsRefused(t *testing.T) {
 	}
 	if got := rev.Settings().Model; got != "" {
 		t.Errorf("model changed to %q despite being refused", got)
+	}
+}
+
+// The whole reason the file route exists: a document embeds an image, and until
+// this the browser had nowhere to fetch it from.
+func TestEmbeddedImagesAreServed(t *testing.T) {
+	rev, root := newReview(t)
+
+	const png = "\x89PNG\r\n\x1a\nnot really"
+	if err := os.WriteFile(filepath.Join(root, "flow.png"), []byte(png), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	const secret = "test-secret-phrase"
+	ts := httptest.NewServer(New(Options{Review: rev, Auth: NewTokenAuth(secret)}))
+	defer ts.Close()
+
+	client := login(t, ts, secret)
+	resp, err := client.Get(ts.URL + "/file/flow.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /file/flow.png = %d, want 200", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != png {
+		t.Errorf("body = %q, want the file's bytes", body)
+	}
+	if got := resp.Header.Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Errorf("X-Content-Type-Options = %q, want nosniff", got)
+	}
+	if got := resp.Header.Get("Content-Security-Policy"); got != "sandbox" {
+		t.Errorf("Content-Security-Policy = %q, want sandbox", got)
+	}
+}
+
+func TestTheFileRouteRefusesWhatIsNotUnderTheRoot(t *testing.T) {
+	rev, root := newReview(t)
+
+	outside := filepath.Join(filepath.Dir(root), "outside.png")
+	if err := os.WriteFile(outside, []byte("secret"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(outside) })
+
+	const secret = "test-secret-phrase"
+	ts := httptest.NewServer(New(Options{Review: rev, Auth: NewTokenAuth(secret)}))
+	defer ts.Close()
+
+	// Redirects are followed here: a climb out of the root is cleaned away by
+	// the mux into a redirect, and what matters is where that lands.
+	client := &http.Client{Jar: login(t, ts, secret).Jar}
+
+	for _, path := range []string{"/file/../outside.png", "/file/.git/config", "/file/"} {
+		resp, err := client.Get(ts.URL + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("GET %s = %d, want 404", path, resp.StatusCode)
+		}
+		if strings.Contains(string(body), "secret") {
+			t.Errorf("GET %s returned the file outside the root", path)
+		}
+	}
+}
+
+func TestTheFileRouteNeedsASession(t *testing.T) {
+	rev, root := newReview(t)
+	if err := os.WriteFile(filepath.Join(root, "flow.png"), []byte("png"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ts := httptest.NewServer(New(Options{Review: rev, Auth: NewTokenAuth("test-secret-phrase")}))
+	defer ts.Close()
+
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	resp, err := client.Get(ts.URL + "/file/flow.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Errorf("an unauthenticated fetch returned %d, want a redirect to the login page", resp.StatusCode)
 	}
 }

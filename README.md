@@ -138,6 +138,25 @@ The choice is remembered — it goes into `.ai-reviewer/state.json` when you mak
 it, so it survives a restart. `--model` on the command line is the more recent
 decision and outranks it, and then becomes the remembered one.
 
+## Images and generated diagrams
+
+A document that says `![](flow.png)` gets its image from the review root, over a
+`/file/` route, with the file's modification time in the URL.
+
+That timestamp is the point. The daemon watches every file under the root, not
+only the Markdown, so when you run `dot -Tpng flow.dot -o flow.png` yourself —
+which the model cannot do, having no shell — the documents that embed that PNG
+re-render on their own. Their image URLs change with the file, and an `<img>`
+whose `src` has changed is one the browser actually fetches again. There is
+nothing to click; if you ever do want to force a re-read, clicking the open
+document's own tab is one.
+
+Only images are rewritten, and only relative ones that stay inside the review
+root: an absolute URL, a `data:` URI, or a path climbing out of the root is left
+exactly as the author wrote it. Files go out with `nosniff` and a sandbox
+policy, so a directory of arbitrary files cannot become a way to run script in
+the review's origin.
+
 ## Security notes
 
 The threat model is a trusted LAN, but two things are handled properly because

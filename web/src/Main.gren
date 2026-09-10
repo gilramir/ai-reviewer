@@ -63,6 +63,7 @@ port clearSelection : {} -> Cmd msg
 
 type alias Model =
     { docs : Array String
+    , opened : String
     , current : Maybe Doc
     , threads : Array Thread
     , busy : Bool
@@ -99,6 +100,7 @@ init : {} -> { model : Model, command : Cmd Msg }
 init _ =
     { model =
         { docs = []
+        , opened = ""
         , current = Nothing
         , threads = []
         , busy = False
@@ -174,7 +176,7 @@ update msg model =
             stay { model | connection = state }
 
         OpenDoc path ->
-            { model = { model | composing = Nothing }
+            { model = { model | composing = Nothing, opened = path }
             , command = socketOut (Protocol.openDoc path)
             }
 
@@ -269,11 +271,21 @@ applyServerMsg : ServerMsg -> Model -> { model : Model, command : Cmd Msg }
 applyServerMsg frame model =
     when frame is
         DocUpdated doc ->
+            -- Renders are broadcast, and the daemon re-renders whatever changed
+            -- on disk — a document nobody has open, a whole branch's worth
+            -- during a checkout. Only the one that was asked for is drawn;
+            -- without that test the page moves off what the reviewer is reading
+            -- whenever some other file is touched.
+            --
             -- An anchor is text rather than offsets, so an edit elsewhere in
             -- the document leaves it perfectly valid and a re-render is no
             -- reason to throw a draft away. When the passage itself has gone,
             -- the composer says so and still keeps the words.
-            stay (afterDocChange doc model)
+            if doc.path == model.opened then
+                stay (afterDocChange doc model)
+
+            else
+                stay model
 
         ThreadsUpdated payload ->
             stay

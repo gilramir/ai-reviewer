@@ -15,6 +15,12 @@ import (
 // This is the whole re-render path. The daemon does not need to know whether a
 // change came from Claude editing a file, the reviewer's own editor, or a git
 // operation: the file changed, so the browser gets the new tree.
+//
+// A document is more than its Markdown, so this watches everything under the
+// root, not only the documents. The case that forces it: the model writes a
+// Graphviz file and cannot run `dot`, so the reviewer runs it themselves. The
+// PNG lands, no Markdown has changed, and without this nothing on screen would
+// ever say so.
 func (r *Review) Watch(ctx context.Context) error {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
@@ -53,26 +59,34 @@ func (r *Review) Watch(ctx context.Context) error {
 				}
 			}
 
-			if !isMarkdown(event.Name) {
+			rel, err := filepath.Rel(r.root, event.Name)
+			if err != nil {
 				continue
 			}
+			changed := filepath.ToSlash(rel)
+
+			if !isMarkdown(event.Name) {
+				// An image the documents embed. They are the ones whose render
+				// is now out of date -- the file they point at has a different
+				// modification time, which is what the browser re-fetches on.
+				for _, docPath := range r.docsUsing(changed) {
+					pending[docPath] = true
+					timer = time.After(settle)
+				}
+				continue
+			}
+
 			if event.Has(fsnotify.Create) || event.Has(fsnotify.Remove) || event.Has(fsnotify.Rename) {
 				r.PublishDocList()
 			}
 			if event.Has(fsnotify.Remove) || event.Has(fsnotify.Rename) {
 				// The conversation about a file that no longer exists refers to
 				// a path that means nothing now.
-				if rel, err := filepath.Rel(r.root, event.Name); err == nil {
-					r.procs.Forget(filepath.ToSlash(rel))
-				}
+				r.procs.Forget(changed)
 				continue
 			}
 
-			rel, err := filepath.Rel(r.root, event.Name)
-			if err != nil {
-				continue
-			}
-			pending[filepath.ToSlash(rel)] = true
+			pending[changed] = true
 			timer = time.After(settle)
 
 		case <-timer:
@@ -120,6 +134,7 @@ func (r *Review) watchTree(watcher *fsnotify.Watcher) error {
 			return nil
 		}
 		if path != r.root && skipDir(info.Name()) {
+			// .git churns constantly and holds nothing a document shows.
 			return filepath.SkipDir
 		}
 		return watcher.Add(path)
