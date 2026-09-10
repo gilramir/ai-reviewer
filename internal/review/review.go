@@ -60,13 +60,15 @@ type Review struct {
 	hist  gitstore.History
 	procs *claudeproc.Manager
 
-	// turns counts the exchanges in flight, so a shutdown can wait for them
+	// pending counts the exchanges in flight, so a shutdown can wait for them
 	// rather than leaving one writing state into a directory that is going
 	// away — or, on a real shutdown, losing what it was about to record.
-	turns sync.WaitGroup
+	pending sync.WaitGroup
 
 	mu       sync.Mutex
 	revs     map[string]int      // document path -> render revision
+	turns    map[string]int      // document path -> turns in its conversation
+	spend    map[string]float64  // document path -> what those turns cost
 	assets   map[string][]string // document path -> files its last render embeds
 	sessions map[string]string   // document path -> Claude session id
 	inflight map[string]int      // document path -> turns running
@@ -130,6 +132,8 @@ func New(opts Options) (*Review, error) {
 			},
 		),
 		revs:     map[string]int{},
+		turns:    map[string]int{},
+		spend:    map[string]float64{},
 		assets:   map[string][]string{},
 		sessions: map[string]string{},
 		inflight: map[string]int{},
@@ -176,7 +180,7 @@ func (r *Review) Close() error {
 func (r *Review) waitForTurns(limit time.Duration) {
 	done := make(chan struct{})
 	go func() {
-		r.turns.Wait()
+		r.pending.Wait()
 		close(done)
 	}()
 
@@ -362,7 +366,7 @@ func (r *Review) Comment(docPath string, anchor Anchor, body string) (*Thread, e
 	r.mu.Unlock()
 
 	prompt := commentPrompt(r.workspacePath(docPath), anchor.Quote, blockAround(string(src), at), body)
-	r.turns.Add(1)
+	r.pending.Add(1)
 	go r.runTurn(thread.ID, docPath, prompt, body)
 
 	r.broadcastThreads(docPath)
@@ -396,7 +400,7 @@ func (r *Review) Reply(threadID, body string) error {
 		prompt = r.reopenPrompt(docPath, anchor, body)
 	}
 
-	r.turns.Add(1)
+	r.pending.Add(1)
 	go r.runTurn(threadID, docPath, prompt, body)
 
 	r.broadcastThreads(docPath)
@@ -466,9 +470,9 @@ func blockAround(src string, at Location) string {
 // --- turns ------------------------------------------------------------------
 
 // runTurn drives one exchange and records whatever came of it. Every caller
-// counts it into r.turns first, and it is this function's job to count it out.
+// counts it into r.pending first, and it is this function's job to count it out.
 func (r *Review) runTurn(threadID, docPath, prompt, subject string) {
-	defer r.turns.Done()
+	defer r.pending.Done()
 
 	r.setBusy(docPath, 1)
 	defer r.setBusy(docPath, -1)
@@ -492,7 +496,7 @@ func (r *Review) runTurn(threadID, docPath, prompt, subject string) {
 		}
 	})
 	if err != nil {
-		r.noteTurnCost(result.Model, result.CostUSD)
+		r.noteTurnCost(docPath, result.Model, result.CostUSD)
 		r.finishTurn(threadID, docPath, Message{
 			Role: RoleAssistant,
 			Text: "The review process failed: " + err.Error(),
@@ -501,7 +505,7 @@ func (r *Review) runTurn(threadID, docPath, prompt, subject string) {
 		return
 	}
 
-	r.noteTurnCost(result.Model, result.CostUSD)
+	r.noteTurnCost(docPath, result.Model, result.CostUSD)
 
 	commit := r.record(docPath, result.Edited, subject, threadID)
 
@@ -643,9 +647,14 @@ type persisted struct {
 	Base string `json:"base,omitempty"`
 	// Model is the choice made in the browser, which outlives the process that
 	// ran it. Absent means no choice was made and the CLI's own default stands.
-	Model    string            `json:"model,omitempty"`
-	Sessions map[string]string `json:"sessions"`
-	Threads  []*Thread         `json:"threads"`
+	Model string `json:"model,omitempty"`
+	// Turns and Spend measure the conversations Sessions names. They are saved
+	// for the same reason the session ids are: the conversation survives a
+	// restart, so how big it has grown has to survive with it.
+	Turns    map[string]int     `json:"turns,omitempty"`
+	Spend    map[string]float64 `json:"spend,omitempty"`
+	Sessions map[string]string  `json:"sessions"`
+	Threads  []*Thread          `json:"threads"`
 }
 
 // writeSynced writes a file and waits for the bytes to reach the disk.
@@ -706,6 +715,12 @@ func (r *Review) load() (persisted, error) {
 	defer r.mu.Unlock()
 	if state.Sessions != nil {
 		r.sessions = state.Sessions
+	}
+	if state.Turns != nil {
+		r.turns = state.Turns
+	}
+	if state.Spend != nil {
+		r.spend = state.Spend
 	}
 	skipped := 0
 	for _, t := range state.Threads {
@@ -768,9 +783,17 @@ func (r *Review) save() error {
 		Base:     r.base,
 		Model:    model,
 		Sessions: map[string]string{},
+		Turns:    map[string]int{},
+		Spend:    map[string]float64{},
 	}
 	for k, v := range r.sessions {
 		state.Sessions[k] = v
+	}
+	for k, v := range r.turns {
+		state.Turns[k] = v
+	}
+	for k, v := range r.spend {
+		state.Spend[k] = v
 	}
 	for _, id := range r.order {
 		if t := r.threads[id]; t != nil {

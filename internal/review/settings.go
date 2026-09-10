@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 
@@ -56,8 +57,20 @@ type Settings struct {
 	// Live is how many CLI processes are running right now.
 	Live int `json:"live"`
 
+	// Conversations is what each document's conversation has grown to since it
+	// was last cleared, which is what makes clearing it a decision rather than
+	// a guess.
+	Conversations []Conversation `json:"conversations"`
+
 	CLIPath    string `json:"cliPath"`
 	CLIVersion string `json:"cliVersion"`
+}
+
+// Conversation is one document's share of the review.
+type Conversation struct {
+	Doc      string  `json:"doc"`
+	Turns    int     `json:"turns"`
+	SpentUSD float64 `json:"spentUsd"`
 }
 
 // modelChoices are the aliases the UI offers. An empty string is "whatever the
@@ -73,7 +86,19 @@ func (r *Review) Settings() Settings {
 	r.mu.Lock()
 	running := r.runningModel
 	spent := r.spentUSD
+	conversations := make([]Conversation, 0, len(r.turns))
+	for docPath, turns := range r.turns {
+		conversations = append(conversations, Conversation{
+			Doc:      docPath,
+			Turns:    turns,
+			SpentUSD: r.spend[docPath],
+		})
+	}
 	r.mu.Unlock()
+
+	sort.Slice(conversations, func(i, j int) bool {
+		return conversations[i].Doc < conversations[j].Doc
+	})
 
 	choices := append([]string(nil), modelChoices...)
 	// A model pinned on the command line that is not one of the aliases still
@@ -98,6 +123,7 @@ func (r *Review) Settings() Settings {
 		MaxBudgetUSD:   cfg.MaxBudgetUSD,
 		SpentUSD:       spent,
 		Live:           r.procs.Live(),
+		Conversations:  conversations,
 		CLIPath:        cfg.Binary,
 		CLIVersion:     r.cliVersion,
 	}
@@ -161,6 +187,10 @@ func (r *Review) ClearContext() error {
 		docs = append(docs, docPath)
 	}
 	r.sessions = map[string]string{}
+	// The counts go with the conversations they measure. What was spent stays
+	// in the session total: clearing the context does not un-spend it.
+	r.turns = map[string]int{}
+	r.spend = map[string]float64{}
 	r.mu.Unlock()
 
 	for _, docPath := range docs {
@@ -172,12 +202,19 @@ func (r *Review) ClearContext() error {
 }
 
 // noteTurnCost records what a finished turn cost and which model ran it.
-func (r *Review) noteTurnCost(model string, costUSD float64) {
+//
+// Counted per document as well as in total, because the per-document figure is
+// the one that answers "is this conversation worth clearing?" -- it is the
+// weight the next comment on that document will carry, and it is what Clear
+// context sets back to nothing.
+func (r *Review) noteTurnCost(docPath, model string, costUSD float64) {
 	r.mu.Lock()
 	if model != "" {
 		r.runningModel = model
 	}
 	r.spentUSD += costUSD
+	r.turns[docPath]++
+	r.spend[docPath] += costUSD
 	r.mu.Unlock()
 }
 

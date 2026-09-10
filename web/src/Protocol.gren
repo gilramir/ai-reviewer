@@ -1,5 +1,6 @@
 module Protocol exposing
     ( Anchor
+    , Conversation
     , Message
     , Role(..)
     , ServerMsg(..)
@@ -90,6 +91,16 @@ type Role
 -- SERVER -> CLIENT
 
 
+{-| One document's conversation, as it stands: how many turns it holds and what
+they cost. Both go back to nothing when the context is cleared.
+-}
+type alias Conversation =
+    { doc : String
+    , turns : Int
+    , spentUsd : Float
+    }
+
+
 {-| What the daemon is running Claude with.
 
 Two models, not one: `model` is what the daemon asks for and may be empty --
@@ -115,6 +126,7 @@ type alias Settings =
     , live : Int
     , cliPath : String
     , cliVersion : String
+    , conversations : Array Conversation
     }
 
 
@@ -202,8 +214,8 @@ a failed decode -- an empty model and a zero spend are both ordinary states.
 -}
 settingsDecoder : Decoder Settings
 settingsDecoder =
-    Decode.map4
-        (\models paths branch spend ->
+    Decode.map5
+        (\models paths branch spend conversations ->
             { model = models.model
             , runningModel = models.running
             , modelChoices = models.choices
@@ -220,12 +232,14 @@ settingsDecoder =
             , live = spend.live
             , cliPath = spend.cliPath
             , cliVersion = spend.cliVersion
+            , conversations = conversations
             }
         )
         modelsDecoder
         toolsDecoder
         branchDecoder
         spendDecoder
+        conversationsDecoder
 
 
 modelsDecoder : Decoder { model : String, running : String, choices : Array String }
@@ -326,6 +340,23 @@ optionalFloat field =
 optionalInt : String -> Decoder Int
 optionalInt field =
     Decode.oneOf [ Decode.field field Decode.int, Decode.succeed 0 ]
+
+
+conversationsDecoder : Decoder (Array Conversation)
+conversationsDecoder =
+    Decode.oneOf
+        [ Decode.field "conversations" (Decode.array conversationDecoder)
+        , Decode.succeed []
+        ]
+
+
+conversationDecoder : Decoder Conversation
+conversationDecoder =
+    Decode.map3
+        (\doc turns spent -> { doc = doc, turns = turns, spentUsd = spent })
+        (Decode.field "doc" Decode.string)
+        (optionalInt "turns")
+        (optionalFloat "spentUsd")
 
 
 threadDecoder : Decoder Thread

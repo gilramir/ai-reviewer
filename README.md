@@ -161,6 +161,12 @@ again on each turn. A reply on an existing thread still works afterwards; the
 daemon re-states the passage, since the conversation that used to remember it is
 gone.
 
+The panel says how much there is to clear, because otherwise the button is a
+guess: **conversation** gives the open document's turns and what they have cost,
+with the other documents' totals under it, since clearing takes them all. The
+counts survive a restart for the same reason the session ids do — the
+conversation survives with them.
+
 The same panel carries the one setting that is yours rather than the review's:
 **theme** — light, dark, or *auto*, which follows the machine. It lives in the
 browser rather than the daemon, so two people reading the same review can

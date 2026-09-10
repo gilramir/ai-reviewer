@@ -10,6 +10,7 @@ server; a reload rebuilds this model from one `doc` and one `threads` message.
 
 import Array exposing (Array)
 import Browser
+import Browser.Dom as Dom
 import Dict exposing (Dict)
 import Doc exposing (Align(..), Doc, Kind(..), Node)
 import Html exposing (Html)
@@ -20,6 +21,7 @@ import Json.Encode as Encode
 import Marks exposing (Range)
 import Math
 import Protocol exposing (Anchor, Role(..), ServerMsg(..), Thread, ThreadStatus(..))
+import Task
 
 
 -- PORTS
@@ -177,6 +179,7 @@ type Msg
     | ModelPicked String
     | ClearContext
     | ThemePicked String
+    | ThreadScrolled
     | DismissError
 
 
@@ -372,6 +375,10 @@ update msg model =
         ThemePicked theme ->
             { model = { model | theme = theme }, command = setTheme theme }
 
+        ThreadScrolled ->
+            -- Nothing to do; the scroll either happened or the thread was gone.
+            stay model
+
         DismissError ->
             stay { model | error = Nothing }
 
@@ -402,24 +409,39 @@ applyServerMsg frame model =
                 stay model
 
         ThreadsUpdated payload ->
-            stay
+            { model =
                 { model
                     | threads = payload.threads
                     , marks = marksIn (plainTextOf model.current) payload.threads
                     , composing = closeIfFiled payload.threads model.composing
                 }
+            , command =
+                -- The comment just filed is at the end of a column that may be
+                -- taller than the window, so it arrives off screen.
+                when justFiled payload.threads model.composing is
+                    Just threadId ->
+                        showEndOfThread threadId
+
+                    Nothing ->
+                        Cmd.none
+            }
 
         AssistantDelta payload ->
             stay { model | threads = appendDelta payload.threadId payload.text model.threads }
 
         TurnEnded payload ->
-            stay
+            -- The answer has landed and the reply box has appeared under it.
+            -- Both are at the end of a thread that is often taller than the
+            -- pane, so the pane goes to where the new words are.
+            { model =
                 { model
                     | threads =
                         mapThread payload.threadId
                             (\thread -> { thread | status = Open, commit = payload.commit })
                             model.threads
                 }
+            , command = showEndOfThread payload.threadId
+            }
 
         BusyChanged payload ->
             stay { model | busy = payload.busy }
@@ -629,6 +651,71 @@ closeIfFiled threads composing =
             Nothing
 
 
+{-| The id of the thread carrying the comment this tab has in flight, if it has
+just come back.
+-}
+justFiled : Array Thread -> Maybe Composing -> Maybe String
+justFiled threads composing =
+    when composing is
+        Just active ->
+            when active.sent is
+                Just sent ->
+                    Array.findFirst (carries active.anchor.quote sent) threads
+                        |> Maybe.map (\found -> found.value.id)
+
+                Nothing ->
+                    Nothing
+
+        Nothing ->
+            Nothing
+
+
+{-| Scroll the threads pane so the end of one thread is at the bottom of it.
+
+The end is what matters rather than the start: a long exchange does not fit, and
+what the reviewer is waiting for is the newest answer and the empty reply box
+under it. Browser.Dom reads the DOM inside an animation frame, which is after
+the frame this update is drawn in, so the measurements are of the thread as it
+now stands rather than as it was.
+
+-}
+showEndOfThread : String -> Cmd Msg
+showEndOfThread threadId =
+    Dom.getElement (threadElementId threadId)
+        |> Task.andThen
+            (\thread ->
+                Dom.getElement threadsPaneId
+                    |> Task.andThen
+                        (\pane ->
+                            Dom.getViewportOf threadsPaneId
+                                |> Task.andThen
+                                    (\pane_ ->
+                                        let
+                                            -- Where the thread ends, measured
+                                            -- from the top of everything the
+                                            -- pane can scroll through.
+                                            ends =
+                                                pane_.viewport.y
+                                                    + (thread.element.y + thread.element.height)
+                                                    - pane.element.y
+                                        in
+                                        Dom.setViewportOf threadsPaneId 0 (ends - pane_.viewport.height + 12)
+                                    )
+                        )
+            )
+        |> Task.attempt (\_ -> ThreadScrolled)
+
+
+threadsPaneId : String
+threadsPaneId =
+    "threads"
+
+
+threadElementId : String -> String
+threadElementId threadId =
+    "thread-" ++ threadId
+
+
 carries : String -> String -> Thread -> Bool
 carries quote body thread =
     thread.anchor.quote == quote
@@ -833,6 +920,7 @@ viewSettingsPanel model =
                 [ Attr.class "settings" ]
                 (Array.flatten
                     [ [ viewModelRow settings
+                      , viewConversationRow settings (docPathOf model)
                       , viewThemeRow model.theme
                       ]
                     , viewSettingRows settings
@@ -890,6 +978,94 @@ viewModelChoice current name =
                 name
             )
         ]
+
+
+{-| How much conversation the open document is carrying.
+
+It sits under the button that throws it away, because that is the number the
+decision turns on: a comment costs the whole conversation behind it, every turn,
+and nothing else on screen says how big that has become.
+
+-}
+viewConversationRow : Protocol.Settings -> String -> Html Msg
+viewConversationRow settings docPath =
+    let
+        here =
+            Array.findFirst (\conversation -> conversation.doc == docPath) settings.conversations
+                |> Maybe.map (\found -> found.value)
+    in
+    Html.div
+        [ Attr.class "setting" ]
+        [ Html.span [ Attr.class "label" ] [ Html.text "conversation" ]
+        , Html.div
+            [ Attr.class "value" ]
+            (Array.flatten
+                [ [ Html.div [] [ Html.text (conversationLabel here) ] ]
+                , when elsewhere settings docPath is
+                    Just note ->
+                        [ Html.p [ Attr.class "note" ] [ Html.text note ] ]
+
+                    Nothing ->
+                        []
+                ]
+            )
+        ]
+
+
+conversationLabel : Maybe Protocol.Conversation -> String
+conversationLabel here =
+    when here is
+        Just conversation ->
+            turnCount conversation.turns ++ ", $" ++ money conversation.spentUsd
+
+        Nothing ->
+            "nothing said yet"
+
+
+turnCount : Int -> String
+turnCount turns =
+    if turns == 1 then
+        "1 turn"
+
+    else
+        String.fromInt turns ++ " turns"
+
+
+{-| What the other documents are carrying, since Clear context takes them all.
+-}
+elsewhere : Protocol.Settings -> String -> Maybe String
+elsewhere settings docPath =
+    let
+        others =
+            Array.keepIf (\conversation -> conversation.doc /= docPath) settings.conversations
+
+        turns =
+            Array.foldl (\conversation total -> total + conversation.turns) 0 others
+
+        spent =
+            Array.foldl (\conversation total -> total + conversation.spentUsd) 0 others
+    in
+    if Array.isEmpty others then
+        Nothing
+
+    else
+        Just
+            ("and "
+                ++ turnCount turns
+                ++ ", $"
+                ++ money spent
+                ++ " on "
+                ++ documentCount (Array.length others)
+            )
+
+
+documentCount : Int -> String
+documentCount documents =
+    if documents == 1 then
+        "one other document"
+
+    else
+        String.fromInt documents ++ " other documents"
 
 
 {-| Light, dark, or whatever the machine says.
@@ -1431,7 +1607,7 @@ marksIn plain threads =
 viewSidebar : Model -> Html Msg
 viewSidebar model =
     Html.aside
-        [ Attr.class "threads" ]
+        [ Attr.class "threads", Attr.id threadsPaneId ]
         (if Array.isEmpty model.threads then
             [ Html.p
                 [ Attr.class "empty" ]
@@ -1447,6 +1623,7 @@ viewThread : Dict String String -> Thread -> Html Msg
 viewThread drafts thread =
     Html.section
         [ Attr.class ("thread " ++ statusClass thread.status)
+        , Attr.id (threadElementId thread.id)
         , Attr.attribute "data-thread-id" thread.id
         ]
         [ Html.blockquote [ Attr.class "quote" ] [ Html.text thread.anchor.quote ]
