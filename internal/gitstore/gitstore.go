@@ -127,8 +127,10 @@ func (g *gitHistory) EnsureBranch(name string) error {
 	}
 
 	// Refuse to move a dirty tree: switching branches under uncommitted work is
-	// how a review session eats someone's unrelated edits.
-	dirty, err := g.output("status", "--porcelain")
+	// how a review session eats someone's unrelated edits. Untracked files
+	// are exempt; they aren't touched by checkout unless there would be a
+	// collission, and git guards against that.
+	dirty, err := g.output("status", "--porcelain", "--untracked-files=no")
 	if err != nil {
 		return fmt.Errorf("git status: %w", err)
 	}
