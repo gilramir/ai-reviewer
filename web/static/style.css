@@ -252,11 +252,6 @@ html, body {
   margin-right: calc(var(--line-gutter) + 2 * var(--list-indent));
 }
 
-/* A task item has already been pulled left to make room for its checkbox. */
-.prose li.task[data-line]::before {
-  margin-right: calc(var(--line-gutter) + var(--list-indent) - 1.2rem);
-}
-
 .prose > [data-line]:not(ul):not(ol):hover::before,
 .prose li[data-line]:hover::before { opacity: 1; }
 
@@ -296,8 +291,20 @@ html, body {
 
 .prose img { max-width: 100%; }
 .prose hr { border: none; border-top: 1px solid var(--rule); }
-.prose li.task { list-style: none; margin-left: -1.2rem; }
+/* A task item has no bullet, so its checkbox hangs into the space the bullet
+   would have used. A hanging indent rather than a negative margin: the item's
+   box stays where every other item's is -- which is what the line number in the
+   margin is measured from -- and the words line up with each other whether they
+   are on the first line or a wrapped one. */
+.prose li.task { list-style: none; text-indent: -1.2rem; }
+.prose li.task > * { text-indent: 0; }
 .prose li.task input { margin-right: 0.4rem; }
+
+/* A list item's text is a paragraph, and a paragraph is a block, so a task's
+   checkbox -- which is a sibling of it, not part of it -- had the whole item
+   to itself and the words began on the line below. The first paragraph joins
+   the checkbox on its line; anything after it is still a block of its own. */
+.prose li.task > p:first-of-type { display: inline; }
 
 mark.anchored {
   background: var(--anchor);
