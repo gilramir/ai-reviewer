@@ -154,6 +154,16 @@ again on each turn. A reply on an existing thread still works afterwards; the
 daemon re-states the passage, since the conversation that used to remember it is
 gone.
 
+The same panel carries the one setting that is yours rather than the review's:
+**theme** — light, dark, or *auto*, which follows the machine. It lives in the
+browser rather than the daemon, so two people reading the same review can
+disagree about it, and it is applied before the first paint, so choosing dark
+does not mean a white flash on every load. The login page honours it too.
+
+The palette is written once with CSS `light-dark()`, which makes the whole
+switch a single `color-scheme` property — and asks for a browser from 2024 or
+later (Chrome 123, Firefox 120, Safari 17.5).
+
 ## Editing it yourself
 
 Not every comment is a question, and some are not even a request: the reviewer

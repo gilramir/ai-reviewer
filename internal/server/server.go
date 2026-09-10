@@ -194,22 +194,35 @@ var loginPage = template.Must(template.New("login").Parse(`<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ai-reviewer</title>
+<script>
+// The theme chosen inside the review, applied here too. Without it, logging out
+// of a dark review lands on a white page.
+try {
+  var saved = window.localStorage.getItem("ai-reviewer.theme");
+  if (saved === "light" || saved === "dark") {
+    document.documentElement.dataset.theme = saved;
+  }
+} catch (err) {}
+</script>
 <style>
+ :root { color-scheme: light dark; }
+ :root[data-theme="light"] { color-scheme: light; }
+ :root[data-theme="dark"] { color-scheme: dark; }
  body { font: 15px/1.5 system-ui, sans-serif; display: grid; place-items: center;
-        min-height: 100vh; margin: 0; background: #fbfaf7; color: #1c1b19; }
- form { background: #fff; border: 1px solid #e3ded4; border-radius: 10px;
+        min-height: 100vh; margin: 0;
+        background: light-dark(#fbfaf7, #16151a); color: light-dark(#1c1b19, #e8e5df); }
+ form { background: light-dark(#fff, #1d1c22);
+        border: 1px solid light-dark(#e3ded4, #33313a); border-radius: 10px;
         padding: 1.5rem; width: min(22rem, 90vw); }
  h1 { font-size: 1rem; margin: 0 0 1rem; font-weight: 600; }
- input { width: 100%; padding: 0.5rem; font: inherit; border: 1px solid #e3ded4;
-         border-radius: 6px; margin-bottom: 0.75rem; }
+ input { width: 100%; padding: 0.5rem; font: inherit; border-radius: 6px;
+         margin-bottom: 0.75rem;
+         background: light-dark(#fbfaf7, #16151a); color: light-dark(#1c1b19, #e8e5df);
+         border: 1px solid light-dark(#e3ded4, #33313a); }
  button { width: 100%; padding: 0.5rem; font: inherit; border: 0;
-          border-radius: 6px; background: #7a4b1e; color: #fff; cursor: pointer; }
- .err { color: #a3341f; margin: 0 0 0.75rem; font-size: 0.875rem; }
- @media (prefers-color-scheme: dark) {
-   body { background: #16151a; color: #e8e5df; }
-   form { background: #1d1c22; border-color: #33313a; }
-   input { background: #16151a; color: #e8e5df; border-color: #33313a; }
- }
+          border-radius: 6px; cursor: pointer;
+          background: light-dark(#7a4b1e, #d3a06a); color: light-dark(#fff, #16151a); }
+ .err { color: light-dark(#a3341f, #e0745c); margin: 0 0 0.75rem; font-size: 0.875rem; }
 </style>
 <form method="post" action="/login">
   <h1>ai-reviewer</h1>

@@ -1,13 +1,47 @@
-// Glue for the three ports Main.gren declares. Everything here is DOM and
-// socket plumbing that Gren cannot express; no application logic lives in this
-// file, and it holds no state the Gren model does not already own.
+// Glue for the four ports Main.gren declares. Everything here is DOM and socket
+// plumbing that Gren cannot express; no application logic lives in this file,
+// and it holds no state the Gren model does not already own.
+//
+// The fourth port is the theme. A Gren program owns the element it is mounted
+// into and nothing above it, so setting color-scheme on <html> — which is what
+// the whole switch amounts to — is not something the view can do.
 
 (function () {
   "use strict";
 
+  // -------------------------------------------------------------- theme
+
+  var THEME_KEY = "ai-reviewer.theme";
+
+  // Whatever the script in index.html already applied. Reading it back rather
+  // than reading storage a second time keeps one answer to "which theme is
+  // this", even if storage is unreadable here.
+  function currentTheme() {
+    var theme = document.documentElement.dataset.theme;
+    return theme === "light" || theme === "dark" ? theme : "auto";
+  }
+
   var app = Gren.Main.init({
     node: document.getElementById("root"),
-    flags: {},
+    flags: { theme: currentTheme() },
+  });
+
+  app.ports.setTheme.subscribe(function (theme) {
+    if (theme === "light" || theme === "dark") {
+      document.documentElement.dataset.theme = theme;
+    } else {
+      delete document.documentElement.dataset.theme;
+    }
+
+    // A refused write costs the reviewer the choice on their next visit, and
+    // nothing else; the page they are looking at has already changed.
+    try {
+      if (theme === "auto") {
+        window.localStorage.removeItem(THEME_KEY);
+      } else {
+        window.localStorage.setItem(THEME_KEY, theme);
+      }
+    } catch (err) {}
   });
 
   // ---------------------------------------------------------------- socket

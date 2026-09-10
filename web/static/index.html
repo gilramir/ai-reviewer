@@ -5,6 +5,19 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ai-reviewer</title>
 <link rel="stylesheet" href="/static/style.css">
+<script>
+// The saved theme, applied before anything is drawn. It has to run here rather
+// than in ports.js at the foot of the page: by then the first paint may already
+// have happened in whatever the system prefers, and a review that flashes white
+// and then goes dark reads as a bug. Storage throws in a browser set to refuse
+// it, which is not a reason to fail to render.
+try {
+  var saved = window.localStorage.getItem("ai-reviewer.theme");
+  if (saved === "light" || saved === "dark") {
+    document.documentElement.dataset.theme = saved;
+  }
+} catch (err) {}
+</script>
 </head>
 <body>
 <div id="root"></div>

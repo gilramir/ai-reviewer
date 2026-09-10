@@ -24,7 +24,7 @@ import Protocol exposing (Anchor, Role(..), ServerMsg(..), Thread, ThreadStatus(
 
 -- PORTS
 --
--- Three, and only three. Everything else the app needs is expressible in Gren.
+-- Four, and only four. Everything else the app needs is expressible in Gren.
 
 
 {-| Outbound protocol frames. The JS side stringifies and writes to the socket.
@@ -58,11 +58,22 @@ port selectionIn : (Decode.Value -> msg) -> Sub msg
 port clearSelection : {} -> Cmd msg
 
 
+{-| The reviewer's choice of theme: "auto", "light" or "dark".
+
+A Gren program owns the element it is mounted into and nothing above it, and the
+whole switch is one `color-scheme` on `<html>`. The JS side also remembers the
+choice, so the page it draws on the next visit is the one that was left.
+
+-}
+port setTheme : String -> Cmd msg
+
+
 -- MODEL
 
 
 type alias Model =
-    { docs : Array String
+    { theme : String
+    , docs : Array String
     , opened : String
     , current : Maybe Doc
     , threads : Array Thread
@@ -118,10 +129,15 @@ type alias Editing =
     }
 
 
-init : {} -> { model : Model, command : Cmd Msg }
-init _ =
+{-| The theme comes in as a flag because the page has already been drawn in it:
+the script in index.html applies the saved choice before the first paint, and
+this is the app being told what that was rather than deciding it again.
+-}
+init : { theme : String } -> { model : Model, command : Cmd Msg }
+init flags =
     { model =
-        { docs = []
+        { theme = flags.theme
+        , docs = []
         , opened = ""
         , current = Nothing
         , threads = []
@@ -160,6 +176,7 @@ type Msg
     | ToggleSettings
     | ModelPicked String
     | ClearContext
+    | ThemePicked String
     | DismissError
 
 
@@ -351,6 +368,9 @@ update msg model =
 
         ClearContext ->
             { model = model, command = socketOut Protocol.clearContext }
+
+        ThemePicked theme ->
+            { model = { model | theme = theme }, command = setTheme theme }
 
         DismissError ->
             stay { model | error = Nothing }
@@ -812,7 +832,9 @@ viewSettingsPanel model =
             Html.div
                 [ Attr.class "settings" ]
                 (Array.flatten
-                    [ [ viewModelRow settings ]
+                    [ [ viewModelRow settings
+                      , viewThemeRow model.theme
+                      ]
                     , viewSettingRows settings
                     ]
                 )
@@ -868,6 +890,39 @@ viewModelChoice current name =
                 name
             )
         ]
+
+
+{-| Light, dark, or whatever the machine says.
+
+The two things in this panel the reviewer can change are next to each other, and
+this one is theirs rather than the review's: it is remembered in this browser,
+not in the daemon, so two people reading the same review can disagree about it.
+
+-}
+viewThemeRow : String -> Html Msg
+viewThemeRow theme =
+    Html.div
+        [ Attr.class "setting model" ]
+        [ Html.span [ Attr.class "label" ] [ Html.text "theme" ]
+        , Html.div
+            [ Attr.class "value" ]
+            [ Html.select
+                [ Events.onInput ThemePicked ]
+                (Array.map (viewThemeChoice theme)
+                    [ { value = "auto", label = "auto (follow this machine)" }
+                    , { value = "light", label = "light" }
+                    , { value = "dark", label = "dark" }
+                    ]
+                )
+            ]
+        ]
+
+
+viewThemeChoice : String -> { value : String, label : String } -> Html Msg
+viewThemeChoice current choice =
+    Html.option
+        [ Attr.value choice.value, Attr.selected (choice.value == current) ]
+        [ Html.text choice.label ]
 
 
 viewSettingRows : Protocol.Settings -> Array (Html Msg)
@@ -1648,7 +1703,7 @@ keyAction keys event =
 -- MAIN
 
 
-main : Program {} Model Msg
+main : Program { theme : String } Model Msg
 main =
     Browser.element
         { init = init

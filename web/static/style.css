@@ -1,31 +1,27 @@
+/* One palette, written once, both ways round.
+
+   light-dark() resolves against the element's own color-scheme, so the entire
+   theme switch is that one property: "light dark" follows the system, and a
+   single value overrides it. The reviewer's choice arrives as data-theme on
+   <html>, set before the first paint by the script in index.html. */
 :root {
-  --bg: #fbfaf7;
-  --paper: #fff;
-  --ink: #1c1b19;
-  --muted: #6b675f;
-  --rule: #e3ded4;
-  --accent: #7a4b1e;
-  --anchor: #fdf0c8;
-  --anchor-edge: #e2c261;
-  --assistant: #f2f4f7;
-  --danger: #a3341f;
+  color-scheme: light dark;
+
+  --bg: light-dark(#fbfaf7, #16151a);
+  --paper: light-dark(#fff, #1d1c22);
+  --ink: light-dark(#1c1b19, #e8e5df);
+  --muted: light-dark(#6b675f, #9b958a);
+  --rule: light-dark(#e3ded4, #33313a);
+  --accent: light-dark(#7a4b1e, #d3a06a);
+  --anchor: light-dark(#fdf0c8, #4a3c14);
+  --anchor-edge: light-dark(#e2c261, #7d6524);
+  --assistant: light-dark(#f2f4f7, #26252d);
+  --danger: light-dark(#a3341f, #e0745c);
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #16151a;
-    --paper: #1d1c22;
-    --ink: #e8e5df;
-    --muted: #9b958a;
-    --rule: #33313a;
-    --accent: #d3a06a;
-    --anchor: #4a3c14;
-    --anchor-edge: #7d6524;
-    --assistant: #26252d;
-    --danger: #e0745c;
-  }
-}
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
 
 * { box-sizing: border-box; }
 
