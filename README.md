@@ -1,5 +1,7 @@
 # ai-reviewer
 
+<img src="docs/ai-reviewer.png" alt="" width="140">
+
 Review Markdown documents in a browser, with Claude Code editing them under you.
 
 Select a passage, type a comment — *"why this?"*, *"reword this"* — and the
@@ -259,13 +261,13 @@ again; anything you clicked while disconnected is queued and sent on reconnect.
 ```
 cmd/ai-reviewer/      CLI: serve, password
 internal/mdast/       goldmark -> JSON AST with source spans
-internal/review/      documents, threads, anchoring, turn lifecycle
+internal/review/      documents, threads, anchoring, assets, turn lifecycle
 internal/claudeproc/  the long-lived claude process, one per document
                       (protocol write-up: docs/backendClaude.md)
 internal/gitstore/    one commit per turn; snapshots outside a repo
 internal/server/      HTTP, auth, WebSocket
 web/src/              Gren: Doc (decoder), Protocol (wire), Marks (anchoring), Main (app)
-web/static/           index.html, ports.js, style.css
+web/static/           index.html, ports.js, style.css, favicon.ico if you add one
 web/tests/            Gren tests for Marks, run under gren-unit-node
 ```
 

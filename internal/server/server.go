@@ -43,6 +43,7 @@ type Server struct {
 func New(opts Options) *Server {
 	s := &Server{opts: opts, mux: http.NewServeMux()}
 
+	s.mux.HandleFunc("/favicon.ico", s.handleFavicon)
 	s.mux.HandleFunc("/login", s.handleLogin)
 	s.mux.HandleFunc("/session", s.handleSession)
 	s.mux.HandleFunc("/logout", s.handleLogout)
@@ -90,6 +91,32 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Error(w, "unauthorised", http.StatusUnauthorized)
+}
+
+// handleFavicon serves web/static/favicon.ico, if there is one.
+//
+// Unprotected, unlike everything else under /static/: browsers ask for this on
+// the login page too, and a session check there answers a request for an icon
+// with a redirect to the page the browser is already looking at. An icon is not
+// worth a login, and it says nothing about the review.
+func (s *Server) handleFavicon(w http.ResponseWriter, r *http.Request) {
+	data, err := web.Static().Open("favicon.ico")
+	if err != nil {
+		// No icon was built in. The browser asks once and gives up.
+		http.NotFound(w, r)
+		return
+	}
+	defer data.Close()
+
+	file, ok := data.(readSeeker)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+
+	w.Header().Set("Content-Type", "image/x-icon")
+	w.Header().Set("Cache-Control", "max-age=3600")
+	http.ServeContent(w, r, "favicon.ico", time.Time{}, file)
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {

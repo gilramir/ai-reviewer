@@ -1106,3 +1106,33 @@ func settingsFrom(t *testing.T, frame map[string]any) map[string]any {
 	}
 	return settings
 }
+
+// The icon is the one asset served without a session. A browser asks for it on
+// the login page as well, where a redirect to the login page is not an icon.
+func TestFaviconIsServedWithoutASession(t *testing.T) {
+	rev, _ := newReview(t)
+
+	ts := httptest.NewServer(New(Options{Review: rev, Auth: NewTokenAuth("test-secret-phrase")}))
+	defer ts.Close()
+
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	resp, err := client.Get(ts.URL + "/favicon.ico")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	// 404 when the build carries no icon, 200 when it does — never a redirect
+	// to the login page, which is what the browser would draw as the icon.
+	switch resp.StatusCode {
+	case http.StatusOK:
+		if got := resp.Header.Get("Content-Type"); got != "image/x-icon" {
+			t.Errorf("Content-Type = %q, want image/x-icon", got)
+		}
+	case http.StatusNotFound:
+	default:
+		t.Errorf("GET /favicon.ico = %d, want 200 or 404", resp.StatusCode)
+	}
+}
