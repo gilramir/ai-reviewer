@@ -7,7 +7,7 @@
     "gren-version": "0.6.6",
     "dependencies": {
         "direct": {
-            "gren-lang/browser": "6.0.2",
+            "gren-lang/browser": "6.0.3",
             "gren-lang/core": "7.4.2"
         },
         "indirect": {

@@ -16,6 +16,7 @@ import Doc exposing (Align(..), Doc, Kind(..), Node)
 import Html exposing (Html)
 import Html.Attributes as Attr
 import Html.Events as Events
+import Html.Keyed
 import Json.Decode as Decode
 import Json.Encode as Encode
 import Marks exposing (Range)
@@ -1383,16 +1384,7 @@ element : Node -> Array (Html Msg) -> Array (Html Msg) -> Html Msg
 element node own kids =
     when Doc.kind node is
         Document ->
-            -- Html.Keyed would be the natural choice here, and for the lists
-            -- below, but it is unusable in gren-lang/browser 6.0.2: the
-            -- virtual-dom kernel's _VirtualDom_dekey still reads Elm's tuple
-            -- layout (`.b`) from what Gren now represents as a { key, node }
-            -- record, so every child becomes undefined. It runs whenever the
-            -- previous node in a position was unkeyed and the new one is
-            -- keyed -- exactly the transition from "Select a document." to a
-            -- rendered document -- and takes the whole page down with
-            -- "Cannot read properties of undefined (reading '$')".
-            Html.node "article" (attrs node "prose") kids
+            Html.Keyed.node "article" (attrs node "prose") (keyed node kids)
 
         Paragraph ->
             Html.p (attrs node "") kids
@@ -1410,10 +1402,10 @@ element node own kids =
 
         ListBlock list ->
             if list.ordered then
-                Html.ol (orderedAttrs node list.start) kids
+                Html.Keyed.ol (orderedAttrs node list.start) (keyed node kids)
 
             else
-                Html.ul (attrs node "") kids
+                Html.Keyed.ul (attrs node "") (keyed node kids)
 
         ListItem item ->
             when item.checked is
@@ -1491,6 +1483,19 @@ element node own kids =
 
         RawHtml _ ->
             Html.code (attrs node "raw-html") own
+
+
+{-| Pair each rendered child with the id of the node it came from, for the two
+containers that key their children. `viewChildren` walks `Doc.children` in order
+and appends in that order, so the two arrays line up. Doing this here, rather
+than in the walk, keeps every other element from paying for keys it never uses.
+-}
+keyed : Node -> Array (Html Msg) -> Array { key : String, node : Html Msg }
+keyed node kids =
+    Array.map2
+        (\child html -> { key = Doc.id child, node = html })
+        (Doc.children node)
+        kids
 
 
 {-| Every rendered element carries its node id, source span and source line.
