@@ -179,6 +179,7 @@ type Msg
     | ModelPicked String
     | ClearContext
     | ThemePicked String
+    | FocusThread String
     | ThreadScrolled
     | DismissError
 
@@ -374,6 +375,11 @@ update msg model =
 
         ThemePicked theme ->
             { model = { model | theme = theme }, command = setTheme theme }
+
+        FocusThread threadId ->
+            -- The reviewer pointed at a highlighted passage, which is how you
+            -- ask for the conversation about it.
+            { model = model, command = showEndOfThread threadId }
 
         ThreadScrolled ->
             -- Nothing to do; the scroll either happened or the thread was gone.
@@ -1584,20 +1590,33 @@ markUp marks base text =
 
 viewPiece : Marks.Piece -> Html Msg
 viewPiece piece =
-    if piece.marked then
-        Html.node "mark" [ Attr.class "anchored" ] [ Html.text piece.text ]
+    when piece.thread is
+        Just threadId ->
+            Html.node "mark"
+                [ Attr.class "anchored"
+                , Attr.title "Go to this thread"
+                , Events.onClick (FocusThread threadId)
+                ]
+                [ Html.text piece.text ]
 
-    else
-        Html.text piece.text
+        Nothing ->
+            Html.text piece.text
 
 
-{-| Where each unresolved thread's quote sits in the document's text.
+{-| Where each unresolved thread's quote sits in the document's text, and which
+thread each one is. A resolved thread is not marked, so a highlight always leads
+somewhere still open -- which is the point of following one.
 -}
 marksIn : Array Char -> Array Thread -> Array Range
 marksIn plain threads =
     threads
         |> Array.keepIf (\thread -> thread.status /= Resolved)
-        |> Array.mapAndKeepJust (\thread -> Marks.find plain thread.anchor.quote)
+        |> Array.mapAndKeepJust
+            (\thread ->
+                Marks.find plain thread.anchor.quote
+                    |> Maybe.map
+                        (\at -> { start = at.start, end = at.end, thread = thread.id })
+            )
         |> Array.sortBy .start
 
 

@@ -45,7 +45,7 @@ plain =
 
 {-| The text a range covers, which is what the reader sees highlighted.
 -}
-covers : Maybe Marks.Range -> Maybe String
+covers : Maybe { start : Int, end : Int } -> Maybe String
 covers found =
     Maybe.map (\range -> String.slice range.start range.end document) found
 
@@ -178,59 +178,59 @@ splittingARun =
             [ U.test "a range wholly inside the run" <| \_ ->
                 expect
                     (Expect.equal
-                        [ { text = "ab", marked = False }
-                        , { text = "cde", marked = True }
-                        , { text = "fg", marked = False }
+                        [ { text = "ab", thread = Nothing }
+                        , { text = "cde", thread = Just "t1" }
+                        , { text = "fg", thread = Nothing }
                         ]
-                        (Marks.split [ { start = 2, end = 5 } ] 0 "abcdefg")
+                        (Marks.split [ { start = 2, end = 5, thread = "t1" } ] 0 "abcdefg")
                     )
             , U.test "a range that began in an earlier run" <| \_ ->
                 expect
                     (Expect.equal
-                        [ { text = "ab", marked = True }, { text = "cdefg", marked = False } ]
-                        (Marks.split [ { start = 0, end = 12 } ] 10 "abcdefg")
+                        [ { text = "ab", thread = Just "t1" }, { text = "cdefg", thread = Nothing } ]
+                        (Marks.split [ { start = 0, end = 12, thread = "t1" } ] 10 "abcdefg")
                     )
             , U.test "a range that continues into a later run" <| \_ ->
                 expect
                     (Expect.equal
-                        [ { text = "ab", marked = False }, { text = "cdefg", marked = True } ]
-                        (Marks.split [ { start = 12, end = 40 } ] 10 "abcdefg")
+                        [ { text = "ab", thread = Nothing }, { text = "cdefg", thread = Just "t1" } ]
+                        (Marks.split [ { start = 12, end = 40, thread = "t1" } ] 10 "abcdefg")
                     )
             , U.test "a range that swallows the run whole" <| \_ ->
                 expect
                     (Expect.equal
-                        [ { text = "abcdefg", marked = True } ]
-                        (Marks.split [ { start = 0, end = 100 } ] 10 "abcdefg")
+                        [ { text = "abcdefg", thread = Just "t1" } ]
+                        (Marks.split [ { start = 0, end = 100, thread = "t1" } ] 10 "abcdefg")
                     )
             , U.test "a run no range touches" <| \_ ->
                 expect
                     (Expect.equal
-                        [ { text = "abcdefg", marked = False } ]
-                        (Marks.split [ { start = 50, end = 60 } ] 10 "abcdefg")
+                        [ { text = "abcdefg", thread = Nothing } ]
+                        (Marks.split [ { start = 50, end = 60, thread = "t1" } ] 10 "abcdefg")
                     )
             , U.test "two ranges in one run" <| \_ ->
                 expect
                     (Expect.equal
-                        [ { text = "a", marked = False }
-                        , { text = "b", marked = True }
-                        , { text = "cd", marked = False }
-                        , { text = "ef", marked = True }
-                        , { text = "g", marked = False }
+                        [ { text = "a", thread = Nothing }
+                        , { text = "b", thread = Just "t1" }
+                        , { text = "cd", thread = Nothing }
+                        , { text = "ef", thread = Just "t2" }
+                        , { text = "g", thread = Nothing }
                         ]
-                        (Marks.split [ { start = 1, end = 2 }, { start = 4, end = 6 } ] 0 "abcdefg")
+                        (Marks.split [ { start = 1, end = 2, thread = "t1" }, { start = 4, end = 6, thread = "t2" } ] 0 "abcdefg")
                     )
             , U.test "a range that ends exactly where the run begins touches nothing" <| \_ ->
                 expect
                     (Expect.equal
-                        [ { text = "abcdefg", marked = False } ]
-                        (Marks.split [ { start = 5, end = 10 } ] 10 "abcdefg")
+                        [ { text = "abcdefg", thread = Nothing } ]
+                        (Marks.split [ { start = 5, end = 10, thread = "t1" } ] 10 "abcdefg")
                     )
             , U.test "an empty run yields no pieces" <| \_ ->
-                expect (Expect.equal [] (Marks.split [ { start = 0, end = 5 } ] 0 ""))
+                expect (Expect.equal [] (Marks.split [ { start = 0, end = 5, thread = "t1" } ] 0 ""))
             , U.test "no ranges at all leaves the run whole" <| \_ ->
                 expect
                     (Expect.equal
-                        [ { text = "abcdefg", marked = False } ]
+                        [ { text = "abcdefg", thread = Nothing } ]
                         (Marks.split [] 10 "abcdefg")
                     )
             , U.test "the pieces of a run always rebuild it" <| \_ ->
@@ -238,7 +238,7 @@ splittingARun =
                     (Expect.equal "abcdefg"
                         (Array.foldl (\piece acc -> acc ++ piece.text)
                             ""
-                            (Marks.split [ { start = 11, end = 14 } ] 10 "abcdefg")
+                            (Marks.split [ { start = 11, end = 14, thread = "t1" } ] 10 "abcdefg")
                         )
                     )
             ]

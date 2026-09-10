@@ -329,6 +329,8 @@ mark.anchored {
   box-shadow: 0 1px 0 var(--anchor-edge);
   color: inherit;
   padding: 0 1px;
+  /* It leads to the thread about it. */
+  cursor: pointer;
 }
 
 /* ----------------------------------------------------------------- threads */

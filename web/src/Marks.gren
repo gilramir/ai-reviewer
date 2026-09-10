@@ -28,19 +28,26 @@ them.
 import Array exposing (Array)
 
 
-{-| A half-open range of the document's text.
+{-| A commented passage on the page: a half-open range of the document's text,
+and the thread anchored to it.
+
+The thread travels with the range so that the highlight can be clicked: what the
+reader points at is a passage, and what they mean by pointing at it is the
+conversation about that passage.
+
 -}
 type alias Range =
     { start : Int
     , end : Int
+    , thread : String
     }
 
 
-{-| A run of text, and whether it falls inside a commented passage.
+{-| A run of text, and the thread whose passage covers it, if any.
 -}
 type alias Piece =
     { text : String
-    , marked : Bool
+    , thread : Maybe String
     }
 
 
@@ -53,11 +60,12 @@ plainText text =
 
 {-| The first place a quote occurs, or nothing when the passage is gone.
 
-One range per quote: the reviewer selected one passage, so a phrase that
-repeats is marked where it first appears rather than everywhere it does.
+One place per quote: the reviewer selected one passage, so a phrase that
+repeats is marked where it first appears rather than everywhere it does. Which
+thread it belongs to is the caller's business, not this search's.
 
 -}
-find : Array Char -> String -> Maybe Range
+find : Array Char -> String -> Maybe { start : Int, end : Int }
 find document quote =
     let
         needle =
@@ -70,7 +78,7 @@ find document quote =
         searchFrom document needle 0
 
 
-searchFrom : Array Char -> Array Char -> Int -> Maybe Range
+searchFrom : Array Char -> Array Char -> Int -> Maybe { start : Int, end : Int }
 searchFrom document needle at =
     if at >= Array.length document then
         Nothing
@@ -165,12 +173,12 @@ pieces ranges base text stop at acc =
     else
         when Array.findFirst (\range -> range.end > at && range.start < stop) ranges is
             Nothing ->
-                Array.pushLast { text = cut base at stop text, marked = False } acc
+                Array.pushLast { text = cut base at stop text, thread = Nothing } acc
 
             Just found ->
                 if found.value.start > at then
                     pieces ranges base text stop found.value.start <|
-                        Array.pushLast { text = cut base at found.value.start text, marked = False } acc
+                        Array.pushLast { text = cut base at found.value.start text, thread = Nothing } acc
 
                 else
                     let
@@ -178,7 +186,7 @@ pieces ranges base text stop at acc =
                             min found.value.end stop
                     in
                     pieces ranges base text stop upTo <|
-                        Array.pushLast { text = cut base at upTo text, marked = True } acc
+                        Array.pushLast { text = cut base at upTo text, thread = Just found.value.thread } acc
 
 
 {-| The slice of a run's text between two document offsets.
