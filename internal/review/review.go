@@ -52,8 +52,13 @@ type Review struct {
 	// that answer is still root.
 	work   string
 	branch string
-	hist   gitstore.History
-	procs  *claudeproc.Manager
+	// base is the branch the review branch was cut from, and so the branch its
+	// commits are waiting to be merged into. It is remembered across restarts
+	// because by then the tree is already on the review branch and the answer
+	// is no longer on disk anywhere.
+	base  string
+	hist  gitstore.History
+	procs *claudeproc.Manager
 
 	mu       sync.Mutex
 	revs     map[string]int      // document path -> render revision
@@ -90,6 +95,11 @@ func New(opts Options) (*Review, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// Asked before the branch is switched: afterwards every answer is the
+	// review branch itself.
+	base := hist.Branch()
+
 	if opts.Branch != "" {
 		if err := hist.EnsureBranch(opts.Branch); err != nil {
 			return nil, err
@@ -134,6 +144,15 @@ func New(opts Options) (*Review, error) {
 	if opts.Model == "" && state.Model != "" {
 		r.procs.SetModel(state.Model)
 	}
+
+	// A restart finds the tree already on the review branch, which says nothing
+	// about where it came from. That is only knowable from what the run that
+	// created it wrote down.
+	if base == "" || base == opts.Branch {
+		base = state.Base
+	}
+	r.base = base
+
 	return r, nil
 }
 
@@ -338,14 +357,39 @@ func (r *Review) Reply(threadID, body string) error {
 		return fmt.Errorf("no such thread")
 	}
 	docPath := thread.Doc
+	anchor := thread.Anchor
 	thread.Messages = append(thread.Messages, Message{Role: RoleUser, Text: body})
 	thread.Status = StatusThinking
+	// A reply normally leans on the conversation to know which passage it is
+	// about. With no session there is no conversation to lean on -- the context
+	// was cleared -- so the passage has to be said again.
+	remembers := r.sessions[docPath] != ""
 	r.mu.Unlock()
 
-	go r.runTurn(threadID, docPath, replyPrompt(body), body)
+	prompt := replyPrompt(body)
+	if !remembers {
+		prompt = r.reopenPrompt(docPath, anchor, body)
+	}
+
+	go r.runTurn(threadID, docPath, prompt, body)
 
 	r.broadcastThreads(docPath)
 	return nil
+}
+
+// reopenPrompt states a thread's passage from scratch, for a reply that lands in
+// a conversation which no longer remembers it. It falls back to the bare reply
+// when the passage cannot be found, which is no worse than saying nothing.
+func (r *Review) reopenPrompt(docPath string, anchor Anchor, body string) string {
+	src, err := r.read(docPath)
+	if err != nil {
+		return replyPrompt(body)
+	}
+	at, ok := Locate(string(src), anchor)
+	if !ok {
+		return replyPrompt(body)
+	}
+	return commentPrompt(r.workspacePath(docPath), anchor.Quote, blockAround(string(src), at), body)
 }
 
 // Resolve closes a thread without further comment.
@@ -560,6 +604,9 @@ func (r *Review) reanchor(docPath string, src string) {
 
 type persisted struct {
 	Branch string `json:"branch"`
+	// Base is the branch Branch was created from. Without it a restarted
+	// daemon cannot say where the review's commits are meant to land.
+	Base string `json:"base,omitempty"`
 	// Model is the choice made in the browser, which outlives the process that
 	// ran it. Absent means no choice was made and the CLI's own default stands.
 	Model    string            `json:"model,omitempty"`
@@ -684,6 +731,7 @@ func (r *Review) save() error {
 	r.mu.Lock()
 	state := persisted{
 		Branch:   r.branch,
+		Base:     r.base,
 		Model:    model,
 		Sessions: map[string]string{},
 	}

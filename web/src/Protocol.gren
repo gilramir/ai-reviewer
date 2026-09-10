@@ -7,6 +7,7 @@ module Protocol exposing
     , Thread
     , ThreadStatus(..)
     , applyEdit
+    , clearContext
     , comment
     , editSource
     , interrupt
@@ -106,6 +107,9 @@ type alias Settings =
     , workspace : String
     , reviewRoot : String
     , branch : String
+    , baseBranch : String
+    , commits : Int
+    , mergeCommand : String
     , maxBudgetUsd : Float
     , spentUsd : Float
     , live : Int
@@ -198,8 +202,8 @@ a failed decode -- an empty model and a zero spend are both ordinary states.
 -}
 settingsDecoder : Decoder Settings
 settingsDecoder =
-    Decode.map3
-        (\models paths spend ->
+    Decode.map4
+        (\models paths branch spend ->
             { model = models.model
             , runningModel = models.running
             , modelChoices = models.choices
@@ -207,7 +211,10 @@ settingsDecoder =
             , permissionMode = paths.permissionMode
             , workspace = paths.workspace
             , reviewRoot = paths.reviewRoot
-            , branch = paths.branch
+            , branch = branch.branch
+            , baseBranch = branch.baseBranch
+            , commits = branch.commits
+            , mergeCommand = branch.mergeCommand
             , maxBudgetUsd = spend.maxBudgetUsd
             , spentUsd = spend.spentUsd
             , live = spend.live
@@ -217,6 +224,7 @@ settingsDecoder =
         )
         modelsDecoder
         toolsDecoder
+        branchDecoder
         spendDecoder
 
 
@@ -235,23 +243,44 @@ toolsDecoder :
         , permissionMode : String
         , workspace : String
         , reviewRoot : String
-        , branch : String
         }
 toolsDecoder =
-    Decode.map5
-        (\tools mode workspace reviewRoot branch ->
+    Decode.map4
+        (\tools mode workspace reviewRoot ->
             { tools = tools
             , permissionMode = mode
             , workspace = workspace
             , reviewRoot = reviewRoot
-            , branch = branch
             }
         )
         (optionalStrings "tools")
         (optionalString "permissionMode")
         (optionalString "workspace")
         (optionalString "reviewRoot")
+
+
+{-| Where the review's commits are, and what to do with them.
+-}
+branchDecoder :
+    Decoder
+        { branch : String
+        , baseBranch : String
+        , commits : Int
+        , mergeCommand : String
+        }
+branchDecoder =
+    Decode.map4
+        (\branch base commits merge ->
+            { branch = branch
+            , baseBranch = base
+            , commits = commits
+            , mergeCommand = merge
+            }
+        )
         (optionalString "branch")
+        (optionalString "baseBranch")
+        (optionalInt "commits")
+        (optionalString "mergeCommand")
 
 
 spendDecoder :
@@ -433,6 +462,14 @@ resolve threadId =
 interrupt : String -> Encode.Value
 interrupt doc =
     tagged "interrupt" [ { key = "doc", value = Encode.string doc } ]
+
+
+{-| Throw away what the model remembers, on every document. The threads are the
+daemon's, and they stay.
+-}
+clearContext : Encode.Value
+clearContext =
+    tagged "clearContext" []
 
 
 {-| Ask for a different model. An empty string means "whatever the reviewer's

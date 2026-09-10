@@ -948,3 +948,161 @@ func TestTheFileRouteNeedsASession(t *testing.T) {
 		t.Errorf("an unauthenticated fetch returned %d, want a redirect to the login page", resp.StatusCode)
 	}
 }
+
+// Clearing the context drops what the model is carrying without touching what
+// the review has recorded, and a reply afterwards still knows which passage it
+// is about — the conversation that used to carry that is gone.
+//
+// The stub only edits when the prompt names the file and quotes the passage, so
+// a reply that lands on the document is proof that the passage was re-stated.
+func TestClearContextKeepsThreadsAndStillAnswers(t *testing.T) {
+	rev, root := newReview(t)
+
+	const secret = "test-secret-phrase"
+	ts := httptest.NewServer(New(Options{Review: rev, Auth: NewTokenAuth(secret)}))
+	defer ts.Close()
+
+	conn := dialWS(t, ts, login(t, ts, secret), ts.URL)
+	waitFor(t, conn, "docList")
+
+	const quote = "The system SHALL retry indefinitely until the operation succeeds."
+	send(t, conn, map[string]any{
+		"type":   "comment",
+		"doc":    "spec.md",
+		"anchor": map[string]any{"nodeId": "n-1", "quote": quote},
+		"body":   "why this?",
+	})
+	waitFor(t, conn, "turnEnd")
+
+	threadID := ""
+	for range 5 {
+		frame := waitFor(t, conn, "threads")
+		if threads, _ := frame["threads"].([]any); len(threads) > 0 {
+			thread, _ := threads[0].(map[string]any)
+			threadID, _ = thread["id"].(string)
+			break
+		}
+	}
+	if threadID == "" {
+		t.Fatal("no thread came back for the comment")
+	}
+
+	send(t, conn, map[string]any{"type": "clearContext"})
+	waitFor(t, conn, "settings")
+
+	// The record of the review is the daemon's, not the process's. Nothing is
+	// republished by the clear, because nothing about the review changed —
+	// so ask for the threads the way a browser does.
+	send(t, conn, map[string]any{"type": "openDoc", "path": "spec.md"})
+	frame := waitFor(t, conn, "threads")
+	if threads, _ := frame["threads"].([]any); len(threads) != 1 {
+		t.Errorf("threads after clearing context = %v, want the one that was filed", frame["threads"])
+	}
+
+	send(t, conn, map[string]any{"type": "reply", "threadId": threadID, "body": "reword this"})
+	end := waitFor(t, conn, "turnEnd")
+	if edited, _ := end["edited"].(bool); !edited {
+		t.Fatalf("a reply after clearing the context did not reach the document: %v", end)
+	}
+
+	after, err := os.ReadFile(filepath.Join(root, "spec.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(after), "REWORDED") {
+		t.Errorf("the reply did not carry the passage it was about:\n%s", after)
+	}
+}
+
+// The panel has to be able to say where the review's commits are and how to
+// land them, and the count has to fall to zero once they have been landed —
+// including by a merge run from a terminal, which the daemon never hears about.
+func TestSettingsReportTheBranchAndHowToMergeIt(t *testing.T) {
+	rev, root := newReview(t)
+
+	const secret = "test-secret-phrase"
+	ts := httptest.NewServer(New(Options{Review: rev, Auth: NewTokenAuth(secret)}))
+	defer ts.Close()
+
+	conn := dialWS(t, ts, login(t, ts, secret), ts.URL)
+
+	settings := settingsFrom(t, waitFor(t, conn, "settings"))
+	if settings["branch"] != "review/test" {
+		t.Errorf("branch = %v, want review/test", settings["branch"])
+	}
+	if settings["baseBranch"] != "main" {
+		t.Errorf("baseBranch = %v, want the branch the review was cut from", settings["baseBranch"])
+	}
+	if commits, _ := settings["commits"].(float64); commits != 0 {
+		t.Errorf("commits = %v, want none before anything is recorded", settings["commits"])
+	}
+	if command, _ := settings["mergeCommand"].(string); command != "" {
+		t.Errorf("mergeCommand = %q, want nothing to merge", command)
+	}
+
+	// One turn, one commit.
+	send(t, conn, map[string]any{
+		"type":   "comment",
+		"doc":    "spec.md",
+		"anchor": map[string]any{"nodeId": "n-1", "quote": "The system SHALL retry indefinitely until the operation succeeds."},
+		"body":   "reword this",
+	})
+	waitFor(t, conn, "turnEnd")
+
+	settings = settingsFrom(t, waitFor(t, conn, "settings"))
+	if commits, _ := settings["commits"].(float64); commits != 1 {
+		t.Errorf("commits = %v, want the one the turn recorded", settings["commits"])
+	}
+	if command, _ := settings["mergeCommand"].(string); command != "git switch main && git merge review/test" {
+		t.Errorf("mergeCommand = %q", command)
+	}
+
+	// What the reviewer does with that command, in their own terminal.
+	gitRun(t, root, "switch", "main")
+	gitRun(t, root, "merge", "review/test")
+	gitRun(t, root, "switch", "review/test")
+
+	send(t, conn, map[string]any{"type": "setModel", "model": "sonnet"})
+	settings = settingsFrom(t, waitFor(t, conn, "settings"))
+	if commits, _ := settings["commits"].(float64); commits != 0 {
+		t.Errorf("commits = %v after the branch was merged, want none", settings["commits"])
+	}
+	if command, _ := settings["mergeCommand"].(string); command != "" {
+		t.Errorf("mergeCommand = %q after the branch was merged, want nothing to merge", command)
+	}
+}
+
+// The tree is on the review branch by the time a restarted daemon can look, so
+// the branch it was cut from has to survive in the state file.
+func TestTheBaseBranchSurvivesARestart(t *testing.T) {
+	rev, root := newReview(t)
+	if base := rev.Settings().BaseBranch; base != "main" {
+		t.Fatalf("baseBranch = %q, want main", base)
+	}
+	if err := rev.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	stub, err := filepath.Abs("testdata/fake-claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := review.New(review.Options{Root: root, Branch: "review/test", ClaudeBinary: stub})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = restarted.Close() })
+
+	if base := restarted.Settings().BaseBranch; base != "main" {
+		t.Errorf("baseBranch after a restart = %q, want main", base)
+	}
+}
+
+func settingsFrom(t *testing.T, frame map[string]any) map[string]any {
+	t.Helper()
+	settings, ok := frame["settings"].(map[string]any)
+	if !ok {
+		t.Fatalf("settings frame carries no settings: %v", frame)
+	}
+	return settings
+}

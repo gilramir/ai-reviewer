@@ -138,6 +138,16 @@ The choice is remembered — it goes into `.ai-reviewer/state.json` when you mak
 it, so it survives a restart. `--model` on the command line is the more recent
 decision and outranks it, and then becomes the remembered one.
 
+**Clear context** in the same panel throws away what the model is carrying, on
+every document. Your comment threads stay — they are the daemon's record, and
+nothing about them depends on a process being alive — but the next comment on a
+document starts a conversation with nothing said in it yet. That is worth doing
+after a model change: a resumed conversation reaches the new model with every
+word the old one said still in it, and every one of those words is paid for
+again on each turn. A reply on an existing thread still works afterwards; the
+daemon re-states the passage, since the conversation that used to remember it is
+gone.
+
 ## Editing it yourself
 
 Not every comment is a question, and some are not even a request: the reviewer
@@ -178,6 +188,28 @@ root: an absolute URL, a `data:` URI, or a path climbing out of the root is left
 exactly as the author wrote it. Files go out with `nosniff` and a sandbox
 policy, so a directory of arbitrary files cannot become a way to run script in
 the review's origin.
+
+## Landing the changes
+
+The panel names the review branch, how many commits are on it that the branch it
+was cut from does not have, and the command that lands them:
+
+```
+  branch    review/docs-2026-09-09
+            4 commits not yet in main
+            git switch main && git merge review/docs-2026-09-09
+```
+
+The daemon will not run it. A merge can conflict, and a conflict raised inside a
+page with no diff view and no way out is worse than no button — so the command
+is shown where it can be read and copied, and run somewhere that can answer for
+it. Nothing else about the review depends on when you do that.
+
+The count is `git rev-list --count base..HEAD` rather than a tally the daemon
+keeps, so it falls to zero on its own once the commits are in — including when
+you merge from a terminal, which the daemon never hears about. Outside a
+repository there is no branch and no count: gitstore keeps snapshots, and
+snapshots are not merged anywhere.
 
 ## Security notes
 

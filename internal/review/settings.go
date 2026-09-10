@@ -36,6 +36,16 @@ type Settings struct {
 	Workspace  string `json:"workspace"`
 	ReviewRoot string `json:"reviewRoot"`
 	Branch     string `json:"branch"`
+	// BaseBranch is where the review's commits are waiting to go, and Commits
+	// is how many are waiting. The count is against the base rather than a
+	// tally the daemon keeps, so it goes to zero on its own once they have been
+	// merged, and stays right when they are merged from a terminal.
+	BaseBranch string `json:"baseBranch"`
+	Commits    int    `json:"commits"`
+	// MergeCommand is what to run to land them. The daemon does not run it:
+	// a merge can conflict, and a conflict raised inside a review page has
+	// nowhere to go. Naming the command is the useful half.
+	MergeCommand string `json:"mergeCommand"`
 
 	MaxBudgetUSD float64 `json:"maxBudgetUsd"`
 	// SpentUSD is what this daemon has spent since it started, summed from what
@@ -58,6 +68,7 @@ var modelChoices = []string{"", "opus", "sonnet", "haiku", "fable"}
 // Settings reports the current configuration.
 func (r *Review) Settings() Settings {
 	cfg := r.procs.Config()
+	commits := r.hist.CommitsSince(r.base)
 
 	r.mu.Lock()
 	running := r.runningModel
@@ -74,6 +85,9 @@ func (r *Review) Settings() Settings {
 
 	return Settings{
 		Model:          cfg.Model,
+		BaseBranch:     r.base,
+		Commits:        commits,
+		MergeCommand:   mergeCommand(r.branch, r.base, commits),
 		RunningModel:   running,
 		ModelChoices:   choices,
 		Tools:          cfg.AllowedTools,
@@ -87,6 +101,21 @@ func (r *Review) Settings() Settings {
 		CLIPath:        cfg.Binary,
 		CLIVersion:     r.cliVersion,
 	}
+}
+
+// mergeCommand spells out how to land a review. It is empty when there is
+// nothing to land, or when there is no branch to land it from -- a review
+// outside a repository keeps snapshots, which are not merged anywhere.
+func mergeCommand(branch, base string, commits int) string {
+	if branch == "" || commits == 0 {
+		return ""
+	}
+	if base == "" {
+		// The branch this was cut from is not known, so the reviewer has to
+		// choose one; the merge itself is still the same command.
+		return "git merge " + branch
+	}
+	return "git switch " + base + " && git merge " + branch
 }
 
 // SetModel changes the model used from the next turn onwards.
@@ -112,6 +141,33 @@ func (r *Review) SetModel(model string) error {
 
 	// Written now rather than at the end of the next turn: the choice should
 	// survive a restart that happens before the reviewer's next comment.
+	return r.save()
+}
+
+// ClearContext throws away what the model remembers, on every document.
+//
+// The threads on screen are untouched: they are the review's record, kept by
+// the daemon, and nothing about them depends on a process still being alive.
+// What goes is the conversation each Claude process is carrying — which is the
+// point when the reviewer has just changed model, since a resumed conversation
+// arrives at the new model with every word the old one said still in it.
+//
+// The next comment on a document starts a new conversation, and pays to read
+// the document again. That is the cost, and it is the whole cost.
+func (r *Review) ClearContext() error {
+	r.mu.Lock()
+	docs := make([]string, 0, len(r.sessions))
+	for docPath := range r.sessions {
+		docs = append(docs, docPath)
+	}
+	r.sessions = map[string]string{}
+	r.mu.Unlock()
+
+	for _, docPath := range docs {
+		r.procs.Forget(docPath)
+	}
+
+	r.PublishSettings()
 	return r.save()
 }
 

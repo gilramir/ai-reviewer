@@ -159,6 +159,7 @@ type Msg
     | InterruptTurn
     | ToggleSettings
     | ModelPicked String
+    | ClearContext
     | DismissError
 
 
@@ -347,6 +348,9 @@ update msg model =
             -- the change in a settings frame: what Claude is actually running
             -- is the server's answer to give, not the select element's.
             { model = model, command = socketOut (Protocol.setModel name) }
+
+        ClearContext ->
+            { model = model, command = socketOut Protocol.clearContext }
 
         DismissError ->
             stay { model | error = Nothing }
@@ -715,12 +719,38 @@ viewTopBar model =
               else
                 Html.text ""
             , viewSettingsButton model
-            , Html.span
-                [ Attr.class ("conn conn-" ++ model.connection) ]
-                [ Html.text model.connection ]
+            , viewConnection model.connection
             ]
         , viewSettingsPanel model
         ]
+
+
+{-| The socket to the daemon, in one word.
+
+"open" was the word the port uses, and on screen it read as something about the
+document — a file being open, a thread being open. What it is about is whether
+this page is still being told anything.
+
+-}
+viewConnection : String -> Html Msg
+viewConnection state =
+    let
+        label =
+            when state is
+                "open" ->
+                    "connected"
+
+                "connecting" ->
+                    "connecting…"
+
+                _ ->
+                    "disconnected"
+    in
+    Html.span
+        [ Attr.class ("conn conn-" ++ state)
+        , Attr.title "This page's connection to the review daemon"
+        ]
+        [ Html.text label ]
 
 
 {-| The button names the model rather than saying "settings", because the model
@@ -813,6 +843,15 @@ viewModelRow settings =
             , Html.p
                 [ Attr.class "note" ]
                 [ Html.text "a change applies to the next comment; the conversation continues" ]
+            , Html.button
+                [ Attr.class "secondary clear-context"
+                , Attr.title "Start the next comment on each document from a new conversation"
+                , Events.onClick ClearContext
+                ]
+                [ Html.text "Clear context" ]
+            , Html.p
+                [ Attr.class "note" ]
+                [ Html.text "forgets what has been said, everywhere; your comment threads stay" ]
             ]
         ]
 
@@ -847,7 +886,7 @@ viewSettingRows settings =
             []
 
           else
-            [ setting "branch" settings.branch ]
+            [ viewBranch settings ]
         , [ setting "spent" (spendLabel settings)
           , setting "processes" (String.fromInt settings.live ++ " running")
           , setting "claude" (claudeLabel settings)
@@ -874,6 +913,67 @@ claudeLabel settings =
 
     else
         version ++ " — " ++ settings.cliPath
+
+
+{-| The review's commits: where they are, how many, and how to land them.
+
+The daemon does not merge. A merge can conflict, and a conflict raised inside a
+page that has no diff and no way out is worse than no button at all -- so what
+the panel offers is the command, ready to be read and run somewhere that can
+answer it.
+
+-}
+viewBranch : Protocol.Settings -> Html Msg
+viewBranch settings =
+    Html.div
+        [ Attr.class "setting" ]
+        [ Html.span [ Attr.class "label" ] [ Html.text "branch" ]
+        , Html.div
+            [ Attr.class "value" ]
+            (Array.flatten
+                [ [ Html.div [] [ Html.text settings.branch ]
+                  , Html.p [ Attr.class "note" ] [ Html.text (commitsLabel settings) ]
+                  ]
+                , if String.isEmpty settings.mergeCommand then
+                    []
+
+                  else
+                    [ Html.pre
+                        [ Attr.class "merge"
+                        , Attr.title "Run this where git can answer a conflict"
+                        ]
+                        [ Html.text settings.mergeCommand ]
+                    ]
+                ]
+            )
+        ]
+
+
+{-| How many commits are waiting, and where they are waiting to go.
+
+The count is what the branch has that its base does not, so it says "nothing to
+merge" the moment they have been merged -- including from a terminal, which the
+daemon would otherwise never hear about.
+
+-}
+commitsLabel : Protocol.Settings -> String
+commitsLabel settings =
+    let
+        counted =
+            if settings.commits == 1 then
+                "1 commit"
+
+            else
+                String.fromInt settings.commits ++ " commits"
+    in
+    if settings.commits == 0 then
+        "nothing recorded yet"
+
+    else if String.isEmpty settings.baseBranch then
+        counted ++ " on it"
+
+    else
+        counted ++ " not yet in " ++ settings.baseBranch
 
 
 setting : String -> String -> Html Msg
@@ -928,6 +1028,16 @@ viewDocTab current path =
             [ { class = "doc-tab", enabled = True }
             , { class = "active", enabled = isCurrent }
             ]
+        , Attr.title
+            (if isCurrent then
+                -- Clicking the open document re-reads it from disk. That is
+                -- worth saying, because there is nothing about a tab that
+                -- suggests the one already selected does anything at all.
+                "Reload " ++ path ++ " from disk"
+
+             else
+                "Open " ++ path
+            )
         , Events.onClick (OpenDoc path)
         ]
         [ Html.text path ]

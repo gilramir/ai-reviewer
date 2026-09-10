@@ -130,6 +130,11 @@ func (s *Server) dispatch(frame clientFrame) {
 	case "interrupt":
 		rev.Interrupt(frame.Doc)
 
+	case "clearContext":
+		if err := rev.ClearContext(); err != nil {
+			rev.PublishError(err.Error())
+		}
+
 	case "setModel":
 		if err := rev.SetModel(frame.Model); err != nil {
 			rev.PublishError(err.Error())

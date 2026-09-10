@@ -132,6 +132,38 @@ html, body {
 .setting .value { word-break: break-word; font-family: var(--mono); font-size: 0.75rem; }
 .setting.model .value { font-family: inherit; font-size: inherit; }
 
+/* A destructive-ish action inside a settings row: sized like the note beneath
+   it, not like the Comment button, so it reads as something you reach for
+   deliberately. */
+/* The merge command, sitting where it can be read and copied. Not a button:
+   the daemon does not run this one. */
+.setting .merge {
+  margin: 0.35rem 0 0;
+  padding: 0.3rem 0.4rem;
+  background: var(--bg);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: all;
+}
+
+.clear-context {
+  margin-top: 0.5rem;
+  font: inherit;
+  font-size: 0.8125rem;
+  padding: 0.2rem 0.6rem;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.clear-context:hover { border-color: var(--danger); color: var(--danger); }
+
 .setting select {
   font: inherit;
   width: 100%;

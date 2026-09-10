@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -59,6 +60,13 @@ type History interface {
 	Revert(ref string) error
 	// Describe returns a short human-readable summary of a reference.
 	Describe(ref string) string
+	// Branch is the branch the working tree is on, empty when that is not a
+	// question this history can answer.
+	Branch() string
+	// CommitsSince counts the commits on the current branch that base does not
+	// have. It is how many changes a review is holding that have not been
+	// merged anywhere, and it falls to zero of its own accord once they have.
+	CommitsSince(base string) int
 }
 
 // Open returns a History for root. A git repository gets real commits; anything
@@ -132,6 +140,31 @@ func (g *gitHistory) EnsureBranch(name string) error {
 		return g.run("checkout", name)
 	}
 	return g.run("checkout", "-b", name)
+}
+
+// Branch reports the checked-out branch, or "" on a detached HEAD.
+func (g *gitHistory) Branch() string {
+	name, err := g.output("rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil || name == "HEAD" {
+		return ""
+	}
+	return name
+}
+
+func (g *gitHistory) CommitsSince(base string) int {
+	if base == "" {
+		return 0
+	}
+	out, err := g.output("rev-list", "--count", base+"..HEAD")
+	if err != nil {
+		// The base branch is gone, or was never there. Nothing to say.
+		return 0
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(out))
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 func (g *gitHistory) Record(c Commit) (string, error) {
@@ -344,6 +377,12 @@ func (s *snapshots) Revert(ref string) error {
 }
 
 func (s *snapshots) Describe(ref string) string { return ref }
+
+// Branch and CommitsSince have no meaning outside a repository: there is no
+// branch to be on and nothing to merge the snapshots into.
+func (s *snapshots) Branch() string { return "" }
+
+func (s *snapshots) CommitsSince(string) int { return 0 }
 
 func collectFiles(dir string) ([]string, error) {
 	var out []string
