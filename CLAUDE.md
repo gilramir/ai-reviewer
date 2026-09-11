@@ -99,6 +99,8 @@ internal/gitstore/    one commit per turn; directory snapshots outside a repo
 internal/server/      HTTP, auth, WebSocket
 web/src/              Doc (decoder), Protocol (wire), Marks (anchoring +
                       highlights), Picker (document list), Main (app)
+tools/                development scripts, not built and not shipped:
+                      screenshot.py photographs the UI of a running daemon
 ```
 
 `docs/developer.md` is the developer-facing write-up: architecture, build, tests,

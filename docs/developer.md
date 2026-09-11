@@ -62,6 +62,7 @@ web/src/              Gren: Doc (decoder), Protocol (wire), Marks (anchoring),
                       Picker (the document list), Main (app)
 web/static/           index.html, ports.js, style.css, favicon.ico if you add one
 web/tests/            Gren tests for Marks and Picker, run under gren-unit-node
+tools/                development scripts; not built, not shipped
 ```
 
 ## Build
@@ -140,6 +141,35 @@ fixed: a selection spanning two blocks files its comment but is not highlighted.
 ```sh
 cd web/tests && gren make Check --output=app && node app --help
 ```
+
+### Looking at it
+
+What no test here covers is how the page looks, and the view is exactly where a
+change compiles clean and is still wrong: a settings row past the bottom of the
+window, a command box that wraps into nonsense, a note that reads as part of the
+row above it. `tools/screenshot.py` drives a real browser at a real daemon and
+writes a PNG:
+
+```sh
+ai-reviewer serve --root ./docs --no-auth --listen 127.0.0.1:8099 &
+tools/screenshot.py http://127.0.0.1:8099/ panel.png --size 1280x700 \
+    --click .settings-toggle --scroll-to '.setting:nth-of-type(8)'
+```
+
+`--click` and `--eval` run in the page in the order given, which is how
+anything behind a button gets opened before the shutter; `--scroll-to` brings
+the part you care about into view last. It speaks the DevTools protocol to
+whichever Chromium-family browser is installed — Edge, Chromium, Chrome — over
+a scratch profile it deletes afterwards, so the only thing to install is
+python3's `websockets`.
+
+Photograph the small window as well as your own. The panel running off the
+bottom of a laptop screen was found that way and would not have been found
+otherwise: at 1280x860 it looked fine.
+
+A review with commits waiting is worth setting up for this, since several rows
+only say anything once there are some: a scratch `git init`, one document, a
+couple of commits made on the review branch while the daemon holds it.
 
 ## Security
 
