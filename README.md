@@ -4,6 +4,8 @@
 
 Review Markdown documents in a browser, with Claude Code editing them under you.
 
+![A document under review. In the margin, two resolved threads and a live one where Claude answered a question and then made the edit it was asked for. On the page, the passages that changed since the session started are tinted, the passage the open thread is anchored to is highlighted, and a new comment is being written against the current selection.](docs/screenshot.png)
+
 Select a passage, type a comment — *"why this?"*, *"reword this"* — and the
 answer appears in the margin, or the document changes and re-renders. Every
 change that lands is a commit on a task branch, so a review session leaves a
