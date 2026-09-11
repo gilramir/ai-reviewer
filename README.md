@@ -291,6 +291,39 @@ you merge from a terminal, which the daemon never hears about. Outside a
 repository there is no branch and no count: gitstore keeps snapshots, and
 snapshots are not merged anywhere.
 
+## Where the state lives
+
+`.ai-reviewer/` is created in the **review root** — the directory `--root`
+names, resolved to an absolute path. Not the current directory, except in the
+sense that `--root` defaults to `.`; and not the repository top level.
+
+The two are different whenever a review is rooted at a subdirectory. `ai-reviewer
+serve --root docs` inside a repository writes `docs/.ai-reviewer/state.json`
+while its commits are made at the top level, next to `.git`, because the paths
+git is handed are relative to the repository and the documents are not.
+
+```
+<review root>/.ai-reviewer/
+  state.json                   threads, anchors, and the replies on them;
+                               each document's claude session id, turn count
+                               and spend; the review branch and the branch it
+                               was cut from; the model chosen in the browser
+  state.json.corrupt-<stamp>   a state file that could not be parsed, moved
+                               aside whole rather than overwritten
+  snapshots/                   only outside a repository, where gitstore keeps
+                               a copy of each file before a turn changes it
+```
+
+The directory is skipped when the documents are listed and when the tree is
+watched, so nothing in it is reviewable and writing to it never triggers a
+re-render. **Add it to your `.gitignore`**: the daemon writes it inside the
+repository it is reviewing, and while an untracked file will not stop a review
+from starting, it will sit in `git status` until you do.
+
+Nothing here is the password. That is a digest in
+`~/.config/ai-reviewer/config.json` (or `$XDG_CONFIG_HOME`), and it belongs to
+you rather than to any one review.
+
 ## Security notes
 
 The threat model is a trusted LAN, but two things are handled properly because

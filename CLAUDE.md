@@ -115,6 +115,10 @@ before touching that package.
   is its permission boundary, and a repo's CLAUDE.md and sibling sources are the
   context a question about a document needs. What the *browser* may open is a
   separate question, and that answer is still `--root`.
+- **Two roots, and they are easy to confuse.** `Review.root` is `--root` made
+  absolute; `Review.work` is the repository top level. Paths handed to git are
+  relative to `work` (see `relativise` and `workspacePath`), while
+  `.ai-reviewer/state.json` and the snapshot fallback are written under `root`.
 - **Nothing classifies the comment.** "why this?" wants an answer, "reword this"
   wants a change, and many want both. The prompt passes it through and the
   daemon reports what happened by watching which tools were called.
