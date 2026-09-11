@@ -293,17 +293,22 @@ snapshots are not merged anywhere.
 
 ## Where the state lives
 
-`.ai-reviewer/` is created in the **review root** — the directory `--root`
-names, resolved to an absolute path. Not the current directory, except in the
-sense that `--root` defaults to `.`; and not the repository top level.
+`.ai-reviewer/` is created at the **workspace root**: beside `.git` in a
+repository, and in the review root outside one — which is the same rule, since
+that is what the daemon calls the workspace when there is no repository to find.
 
-The two are different whenever a review is rooted at a subdirectory. `ai-reviewer
-serve --root docs` inside a repository writes `docs/.ai-reviewer/state.json`
-while its commits are made at the top level, next to `.git`, because the paths
-git is handed are relative to the repository and the documents are not.
+Not the directory `--root` names, when the two differ. `ai-reviewer serve --root
+docs` inside a repository writes `<repo>/.ai-reviewer/state.json`, beside the
+commits it describes, and leaves `docs/` alone.
+
+`--root` selects a view, not an identity. The same `docs/spec.md` is the same
+document with the same threads on it whether you reached it with `--root .` or
+with `--root docs`, and a state file keyed to the way you happened to point at
+it would split that conversation in two. So the paths inside the file are the
+workspace's, and both roots read the same threads.
 
 ```
-<review root>/.ai-reviewer/
+<workspace root>/.ai-reviewer/
   state.json                   threads, anchors, and the replies on them;
                                each document's claude session id, turn count
                                and spend; the review branch and the branch it
@@ -314,9 +319,14 @@ git is handed are relative to the repository and the documents are not.
                                a copy of each file before a turn changes it
 ```
 
+One file for a workspace means a review rooted at a subdirectory opens one that
+may hold threads on documents it cannot address. Those stay invisible — the
+browser can still only open what is under `--root` — and they are written back
+untouched rather than dropped by the first save.
+
 The directory is skipped when the documents are listed and when the tree is
 watched, so nothing in it is reviewable and writing to it never triggers a
-re-render. **Add it to your `.gitignore`**: the daemon writes it inside the
+re-render. **Add it to your `.gitignore`**: the daemon writes it into the
 repository it is reviewing, and while an untracked file will not stop a review
 from starting, it will sit in `git status` until you do.
 

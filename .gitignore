@@ -13,5 +13,7 @@
 # pinned versions actually resolved to.
 .devbox/
 
-# Per-review state written into a review root.
+# A review's state, written at the workspace root -- here, beside .git. The
+# pattern is unanchored so it also catches the snapshot directory a review of a
+# subdirectory outside any repository would leave.
 .ai-reviewer/

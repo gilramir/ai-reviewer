@@ -78,6 +78,12 @@ type Review struct {
 	subs     map[int]chan []byte // subscriber id -> outbound frames
 	nextSub  int
 	notices  []string // things the reviewer must be told about this review
+	// foreign is what the state file says about documents outside this
+	// review's root. The file belongs to the workspace now, so a review rooted
+	// at doc/ opens one that may also hold the threads of a review rooted at
+	// the top. Those are somebody's record too, and they are written back
+	// untouched rather than dropped by this run's first save.
+	foreign persisted
 
 	// runningModel is what the CLI reported for the most recent turn, and
 	// spentUSD what every turn since startup has cost. Both are display only.
@@ -208,6 +214,20 @@ func (r *Review) workspacePath(docPath string) string {
 	rel, err := filepath.Rel(r.work, full)
 	if err != nil {
 		return docPath
+	}
+	return filepath.ToSlash(rel)
+}
+
+// reviewPath is workspacePath backwards: the form the browser uses, for a path
+// the state file recorded. It returns "" for a document this review cannot
+// address, which is every document outside its root — the state file belongs to
+// the whole workspace, and a review of one subdirectory of it will find other
+// people's documents in there.
+func (r *Review) reviewPath(docPath string) string {
+	full := filepath.Join(r.work, filepath.FromSlash(docPath))
+	rel, err := filepath.Rel(r.root, full)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return ""
 	}
 	return filepath.ToSlash(rel)
 }
@@ -686,8 +706,16 @@ func writeSynced(path string, data []byte) error {
 	return f.Close()
 }
 
+// statePath is the state file, which lives at the workspace root: beside .git
+// in a repository, and in the review root outside one, because that is what
+// gitstore reports as the workspace when there is no repository.
+//
+// The workspace rather than the review root because --root selects a view, not
+// an identity. The same document reviewed as `--root .` and as `--root doc` is
+// the same document with the same threads on it, and keying the record to the
+// way it was pointed at would split the conversation in two.
 func (r *Review) statePath() string {
-	return filepath.Join(r.root, ".ai-reviewer", "state.json")
+	return filepath.Join(r.work, ".ai-reviewer", "state.json")
 }
 
 // load restores the saved state and returns it, so New can apply the parts that
@@ -723,16 +751,37 @@ func (r *Review) load() (persisted, error) {
 		return persisted{}, nil
 	}
 
+	// Everything the file says about a document is filed under a
+	// workspace-relative path; everything in memory is filed under the
+	// review-relative one the browser uses. What this review cannot address is
+	// kept aside to be written back at the next save.
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if state.Sessions != nil {
-		r.sessions = state.Sessions
+	r.foreign = persisted{
+		Sessions: map[string]string{},
+		Turns:    map[string]int{},
+		Spend:    map[string]float64{},
 	}
-	if state.Turns != nil {
-		r.turns = state.Turns
+	for doc, id := range state.Sessions {
+		if rel := r.reviewPath(doc); rel != "" {
+			r.sessions[rel] = id
+		} else {
+			r.foreign.Sessions[doc] = id
+		}
 	}
-	if state.Spend != nil {
-		r.spend = state.Spend
+	for doc, n := range state.Turns {
+		if rel := r.reviewPath(doc); rel != "" {
+			r.turns[rel] = n
+		} else {
+			r.foreign.Turns[doc] = n
+		}
+	}
+	for doc, usd := range state.Spend {
+		if rel := r.reviewPath(doc); rel != "" {
+			r.spend[rel] = usd
+		} else {
+			r.foreign.Spend[doc] = usd
+		}
 	}
 	skipped := 0
 	for _, t := range state.Threads {
@@ -740,6 +789,12 @@ func (r *Review) load() (persisted, error) {
 			skipped++
 			continue
 		}
+		rel := r.reviewPath(t.Doc)
+		if rel == "" {
+			r.foreign.Threads = append(r.foreign.Threads, t)
+			continue
+		}
+		t.Doc = rel
 		// A turn cannot survive a restart; anything mid-flight is reopened.
 		if t.Status == StatusThinking {
 			t.Status = StatusOpen
@@ -798,20 +853,34 @@ func (r *Review) save() error {
 		Turns:    map[string]int{},
 		Spend:    map[string]float64{},
 	}
+	// This review's share, back in the workspace's terms, and then whatever the
+	// file already held about documents outside it.
 	for k, v := range r.sessions {
-		state.Sessions[k] = v
+		state.Sessions[r.workspacePath(k)] = v
 	}
 	for k, v := range r.turns {
-		state.Turns[k] = v
+		state.Turns[r.workspacePath(k)] = v
 	}
 	for k, v := range r.spend {
-		state.Spend[k] = v
+		state.Spend[r.workspacePath(k)] = v
 	}
 	for _, id := range r.order {
 		if t := r.threads[id]; t != nil {
-			state.Threads = append(state.Threads, t.clone())
+			saved := t.clone()
+			saved.Doc = r.workspacePath(saved.Doc)
+			state.Threads = append(state.Threads, saved)
 		}
 	}
+	for k, v := range r.foreign.Sessions {
+		state.Sessions[k] = v
+	}
+	for k, v := range r.foreign.Turns {
+		state.Turns[k] = v
+	}
+	for k, v := range r.foreign.Spend {
+		state.Spend[k] = v
+	}
+	state.Threads = append(state.Threads, r.foreign.Threads...)
 	r.mu.Unlock()
 
 	data, err := json.MarshalIndent(state, "", "  ")

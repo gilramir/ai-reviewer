@@ -116,9 +116,13 @@ before touching that package.
   context a question about a document needs. What the *browser* may open is a
   separate question, and that answer is still `--root`.
 - **Two roots, and they are easy to confuse.** `Review.root` is `--root` made
-  absolute; `Review.work` is the repository top level. Paths handed to git are
-  relative to `work` (see `relativise` and `workspacePath`), while
-  `.ai-reviewer/state.json` and the snapshot fallback are written under `root`.
+  absolute; `Review.work` is the repository top level, falling back to `root`
+  outside a repository. Anything durable is keyed to `work`: the paths handed to
+  git, and `.ai-reviewer/state.json` with every document path inside it. Memory
+  and the wire are keyed to `root`, which is what the browser speaks.
+  `workspacePath` and `reviewPath` convert, and `load`/`save` are the only place
+  the boundary is crossed — a state file also holds documents outside this
+  review's root, which `load` parks in `Review.foreign` and `save` writes back.
 - **Nothing classifies the comment.** "why this?" wants an answer, "reword this"
   wants a change, and many want both. The prompt passes it through and the
   daemon reports what happened by watching which tools were called.
