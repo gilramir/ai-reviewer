@@ -23,6 +23,8 @@ import Marks exposing (Change, Range)
 import Math
 import Picker
 import Protocol exposing (Anchor, Role(..), ServerMsg(..), Thread, ThreadStatus(..))
+import Svg
+import Svg.Attributes as SvgAttr
 import Task
 
 
@@ -210,6 +212,8 @@ type Msg
     | CancelComment
     | StartEdit
     | EditChanged String
+    | ClearEdit
+    | EditorFocused
     | SubmitEdit
     | CancelEdit
     | ReplyChanged { threadId : String, text : String }
@@ -417,6 +421,23 @@ update msg model =
         EditChanged text ->
             stay
                 { model | composing = mapEdit (\editing -> { editing | draft = text }) model.composing }
+
+        ClearEdit ->
+            -- The editor opens on the passage as it stands, which is the wrong
+            -- starting point for the commonest hand edit there is: taking the
+            -- words out. Selecting the box and deleting it is three gestures
+            -- for one intention.
+            --
+            -- It empties the box and stops. Saving is still a separate press,
+            -- so this is a step towards either an empty passage or a rewritten
+            -- one, and Cancel is still the way back to what the file says.
+            { model = { model | composing = mapEdit (\editing -> { editing | draft = "" }) model.composing }
+            , command = focusEditSource
+            }
+
+        EditorFocused ->
+            -- Nothing to do; the caret is in the box, or the box has gone.
+            stay model
 
         SubmitEdit ->
             when { composing = model.composing, doc = model.current } is
@@ -909,6 +930,24 @@ focusPickerFilter =
 pickerFilterId : String
 pickerFilterId =
     "picker-filter"
+
+
+{-| Put the caret back in the source box after the Clear button took it.
+
+A button keeps the focus it was given, so without this the reviewer who cleared
+the passage in order to type something else has to click into the box before
+they can.
+
+-}
+focusEditSource : Cmd Msg
+focusEditSource =
+    Dom.focus editSourceId
+        |> Task.attempt (\_ -> EditorFocused)
+
+
+editSourceId : String
+editSourceId =
+    "edit-source"
 
 
 pickerListId : String
@@ -2327,6 +2366,7 @@ viewEditor editing =
                 [ Html.text "Markdown source. Saving commits it; no model turn runs." ]
             , Html.textarea
                 [ Attr.class "source"
+                , Attr.id editSourceId
                 , Attr.rows 5
                 , Attr.spellcheck False
                 , Attr.value editing.draft
@@ -2348,10 +2388,40 @@ viewEditor editing =
                         )
                     ]
                 , Html.button
+                    [ Attr.class "secondary icon"
+                    , Attr.title "Empty the box; nothing is saved until you press Save"
+                    , Events.onClick ClearEdit
+                    , Attr.disabled (editing.sent || String.isEmpty editing.draft)
+                    ]
+                    [ trashIcon, Html.text "Clear" ]
+                , Html.button
                     [ Attr.class "secondary", Events.onClick CancelEdit ]
                     [ Html.text "Cancel" ]
                 ]
             ]
+
+
+{-| A bin, drawn rather than written: an emoji would arrive in whatever colour
+and weight the platform felt like, and this one is a stroke of the button's own
+text colour, so it dims with the label when the button is disabled.
+-}
+trashIcon : Html Msg
+trashIcon =
+    Svg.svg
+        [ SvgAttr.viewBox "0 0 16 16"
+        , SvgAttr.width "13"
+        , SvgAttr.height "13"
+        , SvgAttr.fill "none"
+        , SvgAttr.stroke "currentColor"
+        , SvgAttr.strokeWidth "1.3"
+        , SvgAttr.strokeLinecap "round"
+        , SvgAttr.strokeLinejoin "round"
+        ]
+        [ Svg.path [ SvgAttr.d "M2.5 4.5h11" ] []
+        , Svg.path [ SvgAttr.d "M6 4.5V3h4v1.5" ] []
+        , Svg.path [ SvgAttr.d "M4 4.5v8.5h8V4.5" ] []
+        , Svg.path [ SvgAttr.d "M6.5 7v3.5M9.5 7v3.5" ] []
+        ]
 
 
 {-| The two keys a box of typed words answers to: Shift-Enter sends it, Escape

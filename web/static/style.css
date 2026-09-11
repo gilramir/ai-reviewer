@@ -594,6 +594,17 @@ button:disabled { opacity: 0.6; cursor: default; filter: none; }
 .composer textarea { width: 100%; }
 .composer-actions { display: flex; gap: 0.4rem; margin-top: 0.5rem; }
 
+/* A button whose icon is part of the sentence it makes, not an ornament beside
+   it: the glyph and the word sit on one line and dim together. */
+button.icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding-left: 0.55rem;
+  padding-right: 0.6rem;
+}
+button.icon svg { flex-shrink: 0; }
+
 /* The reviewer's own edit. Monospaced because it is the Markdown source, not
    the words as the document reads them: the asterisks have to be visible to be
    kept. */

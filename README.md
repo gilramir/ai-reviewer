@@ -229,6 +229,13 @@ passage back as Markdown — the source, asterisks and links included, not the
 rendered words the selection was cut from — and Save writes it straight to the
 file. No turn runs, and nothing is spent.
 
+**Clear** empties the box in one press. The editor opens on the passage as it
+stands, which is the wrong starting point for the commonest hand edit there is —
+taking the words out — and selecting the box and deleting it is three gestures
+for one intention. It empties the box and stops: Save is still a separate press,
+so it is a step towards either an empty passage or a rewritten one, and the
+caret is put back in the box so the replacement can be typed straight away.
+
 The change lands exactly the way a turn's does: one commit on the same branch,
 the passage in the subject, and a `Review-Edit: hand` trailer that tells it
 apart from what the model wrote.
