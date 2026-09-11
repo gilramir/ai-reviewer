@@ -209,6 +209,13 @@ say something different, marked from the first changed word to the last with the
 spaces between them swallowed, so a rewritten clause is one highlight rather
 than a row of them.
 
+**changes** in the settings panel turns the tint off, and the row goes on
+counting the passages either way — a document with nothing marked and one whose
+highlight is switched off look identical otherwise, and the reviewer who wonders
+which they are looking at should not have to toggle it to find out. Like the
+theme, the choice is remembered in the browser rather than in the daemon: two
+people reading the same review can want different amounts of colour on it.
+
 Two things it cannot do. A deletion leaves nothing on the page to point at, so
 it is invisible here — `git log` on the review branch is still where the whole
 truth is. And the baseline is this run's: a restart starts the session over, in

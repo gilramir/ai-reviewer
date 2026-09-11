@@ -72,6 +72,16 @@ choice, so the page it draws on the next visit is the one that was left.
 port setTheme : String -> Cmd msg
 
 
+{-| Remember whether the change highlight is wanted.
+
+It is a display preference like the theme, kept in this browser rather than in
+the daemon: two people reading the same review can want different amounts of
+colour on it, and the daemon has no business holding either answer.
+
+-}
+port rememberChanges : Bool -> Cmd msg
+
+
 -- MODEL
 
 
@@ -86,6 +96,7 @@ type alias Model =
     , composing : Maybe Composing
     , marks : Array Range
     , changes : Array Change
+    , showChanges : Bool
     , replyDrafts : Dict String String
     , connection : String
     , settings : Maybe Protocol.Settings
@@ -152,9 +163,11 @@ type alias Editing =
 
 {-| The theme comes in as a flag because the page has already been drawn in it:
 the script in index.html applies the saved choice before the first paint, and
-this is the app being told what that was rather than deciding it again.
+this is the app being told what that was rather than deciding it again. The
+change highlight comes the same way, though only because the two are the same
+kind of thing: nothing is drawn in it until a document arrives.
 -}
-init : { theme : String } -> { model : Model, command : Cmd Msg }
+init : { theme : String, showChanges : Bool } -> { model : Model, command : Cmd Msg }
 init flags =
     { model =
         { theme = flags.theme
@@ -167,6 +180,7 @@ init flags =
         , composing = Nothing
         , marks = []
         , changes = []
+        , showChanges = flags.showChanges
         , replyDrafts = Dict.empty
         , connection = "connecting"
         , settings = Nothing
@@ -206,6 +220,7 @@ type Msg
     | ModelPicked String
     | ClearContext
     | ThemePicked String
+    | ChangesShown Bool
     | FocusThread String
     | ThreadScrolled
     | DismissError
@@ -480,6 +495,12 @@ update msg model =
 
         ThemePicked theme ->
             { model = { model | theme = theme }, command = setTheme theme }
+
+        ChangesShown wanted ->
+            -- The passages themselves stay in the model. Turning the highlight
+            -- off is a question about this page, not about the document, and
+            -- turning it back on should not have to wait for a re-render.
+            { model = { model | showChanges = wanted }, command = rememberChanges wanted }
 
         FocusThread threadId ->
             -- The reviewer pointed at a highlighted passage, which is how you
@@ -1105,6 +1126,7 @@ viewSettingsPanel model =
                     [ [ viewModelRow settings
                       , viewConversationRow settings (docPathOf model)
                       , viewThemeRow model.theme
+                      , viewChangesRow model
                       ]
                     , viewSettingRows settings
                     ]
@@ -1275,6 +1297,53 @@ viewThemeRow theme =
                 )
             ]
         ]
+
+
+{-| Whether to tint what has changed since the session started.
+
+The count is the reason this is a row rather than a bare checkbox: a document
+with nothing marked on it looks exactly like one whose highlight is switched
+off, and the reviewer who wonders which they are looking at deserves an answer
+without having to toggle it and see.
+
+-}
+viewChangesRow : Model -> Html Msg
+viewChangesRow model =
+    Html.div
+        [ Attr.class "setting model" ]
+        [ Html.span [ Attr.class "label" ] [ Html.text "changes" ]
+        , Html.div
+            [ Attr.class "value" ]
+            [ Html.label
+                [ Attr.class "toggle" ]
+                [ Html.input
+                    [ Attr.type_ "checkbox"
+                    , Attr.checked model.showChanges
+                    , Events.onCheck ChangesShown
+                    ]
+                    []
+                , Html.text "tint what changed since this session started"
+                ]
+            , Html.p [ Attr.class "note" ] [ Html.text (changesNote model) ]
+            ]
+        ]
+
+
+changesNote : Model -> String
+changesNote model =
+    when Array.length model.changes is
+        0 ->
+            if model.current == Nothing then
+                "no document open"
+
+            else
+                "nothing has changed yet"
+
+        1 ->
+            "1 passage on this page"
+
+        n ->
+            String.fromInt n ++ " passages on this page"
 
 
 viewThemeChoice : String -> { value : String, label : String } -> Html Msg
@@ -1710,7 +1779,14 @@ type alias Marking =
 
 marking : Model -> Marking
 marking model =
-    { marks = model.marks, changes = model.changes }
+    { marks = model.marks
+    , changes =
+        if model.showChanges then
+            model.changes
+
+        else
+            []
+    }
 
 
 {-| Render a node, and report where the walk has reached.
@@ -2323,7 +2399,7 @@ keyAction keys event =
 -- MAIN
 
 
-main : Program { theme : String } Model Msg
+main : Program { theme : String, showChanges : Bool } Model Msg
 main =
     Browser.element
         { init = init

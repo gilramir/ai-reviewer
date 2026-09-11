@@ -1,10 +1,10 @@
-// Glue for the four ports Main.gren declares. Everything here is DOM and socket
+// Glue for the ports Main.gren declares. Everything here is DOM and socket
 // plumbing that Gren cannot express; no application logic lives in this file,
 // and it holds no state the Gren model does not already own.
 //
-// The fourth port is the theme. A Gren program owns the element it is mounted
-// into and nothing above it, so setting color-scheme on <html> — which is what
-// the whole switch amounts to — is not something the view can do.
+// Two of them are not plumbing but memory. The theme has to reach <html>, which
+// a Gren program mounted into <div id="root"> does not own, and both it and the
+// change highlight are remembered between visits, which means storage.
 
 (function () {
   "use strict";
@@ -12,6 +12,7 @@
   // -------------------------------------------------------------- theme
 
   var THEME_KEY = "ai-reviewer.theme";
+  var CHANGES_KEY = "ai-reviewer.changes";
 
   // Whatever the script in index.html already applied. Reading it back rather
   // than reading storage a second time keeps one answer to "which theme is
@@ -21,9 +22,20 @@
     return theme === "light" || theme === "dark" ? theme : "auto";
   }
 
+  // Shown unless it was turned off, and shown again if storage cannot be read:
+  // the highlight is the answer to a question the reviewer is going to ask, so
+  // the default is to have already answered it.
+  function showChanges() {
+    try {
+      return window.localStorage.getItem(CHANGES_KEY) !== "off";
+    } catch (err) {
+      return true;
+    }
+  }
+
   var app = Gren.Main.init({
     node: document.getElementById("root"),
-    flags: { theme: currentTheme() },
+    flags: { theme: currentTheme(), showChanges: showChanges() },
   });
 
   app.ports.setTheme.subscribe(function (theme) {
@@ -40,6 +52,18 @@
         window.localStorage.removeItem(THEME_KEY);
       } else {
         window.localStorage.setItem(THEME_KEY, theme);
+      }
+    } catch (err) {}
+  });
+
+  app.ports.rememberChanges.subscribe(function (wanted) {
+    // Same trade as the theme: a refused write costs the choice on the next
+    // visit and nothing on this one.
+    try {
+      if (wanted) {
+        window.localStorage.removeItem(CHANGES_KEY);
+      } else {
+        window.localStorage.setItem(CHANGES_KEY, "off");
       }
     } catch (err) {}
   });

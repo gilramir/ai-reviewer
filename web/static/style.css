@@ -227,6 +227,17 @@ html, body {
   align-items: baseline;
 }
 .setting + .setting { border-top: 1px solid var(--rule); }
+
+/* A checkbox and its words on one line, reading as a sentence rather than as a
+   control with a caption. The box is nudged to sit on the text's baseline
+   rather than above it. */
+.setting .toggle {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  cursor: pointer;
+}
+.setting .toggle input { margin: 0; flex-shrink: 0; }
 .setting .label { color: var(--muted); }
 .setting .value { word-break: break-word; font-family: var(--mono); font-size: 0.75rem; }
 .setting.model .value { font-family: inherit; font-size: inherit; }
