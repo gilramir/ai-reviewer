@@ -229,6 +229,11 @@ func runServe(_ *argparse.Command, values argparse.Values) error {
 	if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
+
+	// Closed here as well as by the deferred call, so that a turn which
+	// committed while the daemon was stopping is in the count below.
+	_ = rev.Close()
+	fmt.Print(landing(rev.Settings()))
 	return nil
 }
 
@@ -303,6 +308,76 @@ func announce(listen, branch, root, workRoot, secret string, noAuth bool) {
 		fmt.Printf("    password   (the one you set with `ai-reviewer password`)\n")
 	}
 	fmt.Println()
+}
+
+// landing says how to merge the review branch, printed as the daemon stops.
+//
+// The end of the session is where this belongs rather than the banner: at
+// startup there is nothing to land and no count to give, and by the time there
+// is, the banner is far up the scrollback. Stopping the daemon is also the
+// moment the question is actually asked, and the reviewer is already at a
+// prompt to answer it in.
+//
+// It spells both merges out because the reviewer this tool is for is not
+// necessarily fluent in git, and every one of these commands is one they can
+// undo: nothing here rewrites history.
+func landing(s review.Settings) string {
+	// Outside a repository there is no branch to merge. The review kept
+	// snapshots of each file instead, and those are not going anywhere.
+	if s.Branch == "" {
+		return ""
+	}
+
+	var b strings.Builder
+	if s.Commits == 0 {
+		fmt.Fprintf(&b, "\n  Nothing is waiting on %s.\n\n", s.Branch)
+		fmt.Fprintf(&b, "  Delete it if you are finished with this review:\n\n")
+		fmt.Fprintf(&b, "    git branch -d %s\n\n", s.Branch)
+		return b.String()
+	}
+
+	// The base is only unknown when the branch this was cut from has since
+	// gone, which leaves the reviewer to name the one they want instead.
+	base := s.BaseBranch
+	if base == "" {
+		base = "<the branch you want them on>"
+	}
+
+	// A squash of one commit is still a squash -- what it offers there is a
+	// message of your own rather than fewer commits.
+	squash := fmt.Sprintf("  or, to land the whole review as one commit rather than %d:\n\n", s.Commits)
+	if s.Commits == 1 {
+		squash = "  or, to land it with a commit message of your own:\n\n"
+	}
+
+	fmt.Fprintf(&b, "\n  %s on %s.\n", countedCommits(s.Commits), s.Branch)
+	fmt.Fprintf(&b, "  Nothing reaches %s until you merge %s:\n\n", base, them(s.Commits))
+	fmt.Fprintf(&b, "    git switch %s\n", base)
+	fmt.Fprintf(&b, "    git merge %s\n\n", s.Branch)
+	b.WriteString(squash)
+	fmt.Fprintf(&b, "    git switch %s\n", base)
+	fmt.Fprintf(&b, "    git merge --squash %s\n", s.Branch)
+	fmt.Fprintf(&b, "    git commit\n\n")
+	fmt.Fprintf(&b, "  Either way the review branch is then yours to delete:\n\n")
+	fmt.Fprintf(&b, "    git branch -d %s\n\n", s.Branch)
+	fmt.Fprintf(&b, "  After a squash that one is refused: the single commit is not the\n")
+	fmt.Fprintf(&b, "  commits on the branch, so git cannot tell they landed. Delete it\n")
+	fmt.Fprintf(&b, "  with git branch -D %s once you have checked that they did.\n\n", s.Branch)
+	return b.String()
+}
+
+func them(n int) string {
+	if n == 1 {
+		return "it"
+	}
+	return "them"
+}
+
+func countedCommits(n int) string {
+	if n == 1 {
+		return "1 commit is waiting"
+	}
+	return fmt.Sprintf("%d commits are waiting", n)
 }
 
 // resolveBranch settles the task branch every review commit lands on.

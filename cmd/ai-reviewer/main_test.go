@@ -1,8 +1,10 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
+	"github.com/gilramir/ai-reviewer/internal/review"
 	"github.com/gilramir/ai-reviewer/internal/server"
 )
 
@@ -56,5 +58,72 @@ func TestListenAllIsNotLoopback(t *testing.T) {
 	}
 	if server.IsLoopback(addr) {
 		t.Errorf("%q reads as loopback, so --no-auth would be allowed with it", addr)
+	}
+}
+
+// The advice at shutdown is the only place many reviewers will be told how to
+// land a review, so each of the three things it has to say has to be in it:
+// both merges, and the delete that a squash then refuses.
+func TestLanding(t *testing.T) {
+	tests := []struct {
+		name     string
+		settings review.Settings
+		want     []string
+		notWant  []string
+	}{
+		{
+			name:     "commits waiting",
+			settings: review.Settings{Branch: "review/docs", BaseBranch: "main", Commits: 4},
+			want: []string{
+				"4 commits are waiting on review/docs",
+				"git switch main",
+				"git merge review/docs",
+				"git merge --squash review/docs",
+				"git commit",
+				"git branch -d review/docs",
+				"git branch -D review/docs",
+			},
+		},
+		{
+			name:     "one commit is not asked to be rather than one",
+			settings: review.Settings{Branch: "review/docs", BaseBranch: "main", Commits: 1},
+			want:     []string{"1 commit is waiting", "until you merge it", "message of your own"},
+			notWant:  []string{"rather than 1"},
+		},
+		{
+			// The branch it was cut from is gone, so the reviewer names one.
+			name:     "no base branch",
+			settings: review.Settings{Branch: "review/docs", Commits: 2},
+			want:     []string{"git merge review/docs", "git merge --squash review/docs"},
+		},
+		{
+			name:     "nothing to land",
+			settings: review.Settings{Branch: "review/docs", BaseBranch: "main"},
+			want:     []string{"Nothing is waiting", "git branch -d review/docs"},
+			notWant:  []string{"git merge"},
+		},
+		{
+			// Outside a repository the review keeps snapshots, and there is no
+			// branch to merge or to advise about.
+			name:     "outside a repository",
+			settings: review.Settings{},
+			notWant:  []string{"git"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := landing(tt.settings)
+			for _, want := range tt.want {
+				if !strings.Contains(got, want) {
+					t.Errorf("the advice does not mention %q:\n%s", want, got)
+				}
+			}
+			for _, unwanted := range tt.notWant {
+				if strings.Contains(got, unwanted) {
+					t.Errorf("the advice mentions %q, and should not:\n%s", unwanted, got)
+				}
+			}
+		})
 	}
 }

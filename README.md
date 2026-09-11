@@ -116,10 +116,9 @@ answering.
 When the session is over, every change the review produced — the model's edits
 and your hand edits alike — is sitting as commits on the review branch. Your
 target branch has not been touched. **Merging is your job**: the daemon never
-does it.
+does it, because a merge can conflict and a page is no place to resolve one.
 
-The settings panel names the review branch, counts the commits not yet on the
-branch it was cut from, and shows the command that lands them:
+The settings panel names the review branch and counts what is waiting on it:
 
 ```
   branch    review/docs-2026-09-09
@@ -127,11 +126,45 @@ branch it was cut from, and shows the command that lands them:
             git switch main && git merge review/docs-2026-09-09
 ```
 
-Run that in a terminal, or rebase, squash, or cherry-pick the branch however
-you would any other. The daemon will not run it for you, because a merge can
-conflict and a page is no place to resolve one. Until you do, the review branch
-is an ordinary branch: look at it with `git log`, and delete it if you decide
-you want none of it.
+and stopping the daemon prints the same advice at more length, at the moment
+you are back in a terminal to act on it.
+
+**Bring the commits across.** One per turn, each with the comment that caused
+it as its message:
+
+```sh
+git switch main                     # the branch you were on before the review
+git merge review/docs-2026-09-09
+```
+
+**Or fold them into one.** A squash merge lands the same final text as a single
+commit, with a message you write:
+
+```sh
+git switch main
+git merge --squash review/docs-2026-09-09
+git commit                          # your editor opens for the message
+```
+
+Take the first when the turn-by-turn history is worth keeping — it is a record
+of what was asked and what changed in answer. Take the second when the review
+was one piece of work and the branch would just be noise in `git log`.
+
+**Then delete the review branch**, if you want it gone:
+
+```sh
+git branch -d review/docs-2026-09-09
+```
+
+After a squash merge that is refused: the single commit on `main` is not the
+commits on the branch, so git cannot tell they landed. Check with `git log` or
+`git diff main review/docs-2026-09-09` that nothing is left behind, then use a
+capital `-D` to delete it anyway. `-D` is also how you throw a review away
+having merged none of it.
+
+Nothing here is one-way. Until you merge, the review branch is an ordinary
+branch: read it with `git log`, `git switch` to it and back, rebase or
+cherry-pick it as you would any other.
 
 Outside a git repository there is no branch. The daemon keeps a snapshot of
 each file before a turn changes it instead.
