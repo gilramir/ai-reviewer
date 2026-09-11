@@ -17,6 +17,13 @@ make tools        # report what is installed against versions.mk
 make run          # build, then serve ./docs on 127.0.0.1:8080
 ```
 
+Development leaves processes running: a daemon from `make run`, a headless
+browser from `tools/screenshot.py`. Stop them by the PID they were started with.
+`pkill` by name or pattern is too blunt on a developer's machine — `pkill -x
+msedge` takes the browser they are reading this in, and `pkill -f "ai-reviewer
+serve"` matches the shell running that very command, which then kills itself
+before doing anything.
+
 Single tests:
 
 ```sh
