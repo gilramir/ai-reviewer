@@ -470,3 +470,4 @@ comments explaining the decisions this document summarises.
 - `code.claude.com/docs/en/agent-sdk` — the Agent SDK, if you are in Python or
   TypeScript and would rather not own a subprocess.
 - [`../README.md`](../README.md) — what this daemon is for.
+- [`developer.md`](developer.md) — how the rest of it is put together.

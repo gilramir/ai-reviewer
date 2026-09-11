@@ -101,6 +101,9 @@ web/src/              Doc (decoder), Protocol (wire), Marks (anchoring +
                       highlights), Picker (document list), Main (app)
 ```
 
+`docs/developer.md` is the developer-facing write-up: architecture, build, tests,
+and the reasoning behind each feature. The README is for users and stays short.
+
 `docs/backendClaude.md` documents the CLI protocol `claudeproc` speaks. Read it
 before touching that package.
 
