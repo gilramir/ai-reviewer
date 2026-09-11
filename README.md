@@ -118,16 +118,25 @@ and your hand edits alike — is sitting as commits on the review branch. Your
 target branch has not been touched. **Merging is your job**: the daemon never
 does it, because a merge can conflict and a page is no place to resolve one.
 
-The settings panel names the review branch and counts what is waiting on it:
+The settings panel names the review branch, counts what is waiting on it, and
+spells out each way to land it:
 
 ```
   branch    review/docs-2026-09-09
             4 commits not yet in main
+
+            keep the commits, one per turn
             git switch main && git merge review/docs-2026-09-09
+
+            or fold the review into one commit
+            git switch main && git merge --squash review/docs-2026-09-09 && git commit
+
+            then, if you want the branch gone
+            git branch -d review/docs-2026-09-09
 ```
 
-and stopping the daemon prints the same advice at more length, at the moment
-you are back in a terminal to act on it.
+Stopping the daemon prints the same three at more length, at the moment you are
+back in a terminal to act on them. Either way you run them yourself.
 
 **Bring the commits across.** One per turn, each with the comment that caused
 it as its message:

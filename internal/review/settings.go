@@ -43,10 +43,10 @@ type Settings struct {
 	// merged, and stays right when they are merged from a terminal.
 	BaseBranch string `json:"baseBranch"`
 	Commits    int    `json:"commits"`
-	// MergeCommand is what to run to land them. The daemon does not run it:
-	// a merge can conflict, and a conflict raised inside a review page has
-	// nowhere to go. Naming the command is the useful half.
-	MergeCommand string `json:"mergeCommand"`
+	// Landing is what to run to land them. The daemon runs none of it: a merge
+	// can conflict, and a conflict raised inside a review page has nowhere to
+	// go. Naming the commands is the useful half.
+	Landing Landing `json:"landing"`
 
 	MaxBudgetUSD float64 `json:"maxBudgetUsd"`
 	// SpentUSD is what this daemon has spent since it started, summed from what
@@ -112,7 +112,7 @@ func (r *Review) Settings() Settings {
 		Model:          cfg.Model,
 		BaseBranch:     r.base,
 		Commits:        commits,
-		MergeCommand:   mergeCommand(r.branch, r.base, commits),
+		Landing:        landingCommands(r.branch, r.base, commits),
 		RunningModel:   running,
 		ModelChoices:   choices,
 		Tools:          cfg.AllowedTools,
@@ -129,19 +129,44 @@ func (r *Review) Settings() Settings {
 	}
 }
 
-// mergeCommand spells out how to land a review. It is empty when there is
+// Landing is the three commands a finished review ends in. They are spelled
+// out rather than left to the reviewer, who is as likely to be a writer as a
+// programmer: "your changes are on review/docs-2026-09-09" is not an
+// instruction to someone who has never typed git merge.
+type Landing struct {
+	// Merge brings the commits across as they are, one per turn, each carrying
+	// the comment that caused it.
+	Merge string `json:"merge"`
+	// Squash lands the same final text as a single commit with a message of
+	// the reviewer's own, for a review that was one piece of work.
+	Squash string `json:"squash"`
+	// Delete is what to do with the branch afterwards. It is the lowercase -d,
+	// which refuses after a squash -- the one commit that landed is not the
+	// commits on the branch, so git cannot tell they arrived. Saying -D here
+	// would be saying it before the check that makes it safe.
+	Delete string `json:"delete"`
+}
+
+// landingCommands spells out how to land a review. It is empty when there is
 // nothing to land, or when there is no branch to land it from -- a review
 // outside a repository keeps snapshots, which are not merged anywhere.
-func mergeCommand(branch, base string, commits int) string {
+func landingCommands(branch, base string, commits int) Landing {
 	if branch == "" || commits == 0 {
-		return ""
+		return Landing{}
 	}
-	if base == "" {
-		// The branch this was cut from is not known, so the reviewer has to
-		// choose one; the merge itself is still the same command.
-		return "git merge " + branch
+
+	// The branch this was cut from is not known, so the reviewer has to choose
+	// one and switch to it themselves; the merges are the same either way.
+	switchTo := ""
+	if base != "" {
+		switchTo = "git switch " + base + " && "
 	}
-	return "git switch " + base + " && git merge " + branch
+
+	return Landing{
+		Merge:  switchTo + "git merge " + branch,
+		Squash: switchTo + "git merge --squash " + branch + " && git commit",
+		Delete: "git branch -d " + branch,
+	}
 }
 
 // SetModel changes the model used from the next turn onwards.

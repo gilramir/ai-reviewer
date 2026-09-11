@@ -1036,8 +1036,8 @@ func TestSettingsReportTheBranchAndHowToMergeIt(t *testing.T) {
 	if commits, _ := settings["commits"].(float64); commits != 0 {
 		t.Errorf("commits = %v, want none before anything is recorded", settings["commits"])
 	}
-	if command, _ := settings["mergeCommand"].(string); command != "" {
-		t.Errorf("mergeCommand = %q, want nothing to merge", command)
+	if merge := landingField(settings, "merge"); merge != "" {
+		t.Errorf("landing.merge = %q, want nothing to merge", merge)
 	}
 
 	// One turn, one commit.
@@ -1053,8 +1053,14 @@ func TestSettingsReportTheBranchAndHowToMergeIt(t *testing.T) {
 	if commits, _ := settings["commits"].(float64); commits != 1 {
 		t.Errorf("commits = %v, want the one the turn recorded", settings["commits"])
 	}
-	if command, _ := settings["mergeCommand"].(string); command != "git switch main && git merge review/test" {
-		t.Errorf("mergeCommand = %q", command)
+	if merge := landingField(settings, "merge"); merge != "git switch main && git merge review/test" {
+		t.Errorf("landing.merge = %q", merge)
+	}
+	if squash := landingField(settings, "squash"); squash != "git switch main && git merge --squash review/test && git commit" {
+		t.Errorf("landing.squash = %q", squash)
+	}
+	if remove := landingField(settings, "delete"); remove != "git branch -d review/test" {
+		t.Errorf("landing.delete = %q", remove)
 	}
 
 	// What the reviewer does with that command, in their own terminal.
@@ -1067,9 +1073,17 @@ func TestSettingsReportTheBranchAndHowToMergeIt(t *testing.T) {
 	if commits, _ := settings["commits"].(float64); commits != 0 {
 		t.Errorf("commits = %v after the branch was merged, want none", settings["commits"])
 	}
-	if command, _ := settings["mergeCommand"].(string); command != "" {
-		t.Errorf("mergeCommand = %q after the branch was merged, want nothing to merge", command)
+	if merge := landingField(settings, "merge"); merge != "" {
+		t.Errorf("landing.merge = %q after the branch was merged, want nothing to merge", merge)
 	}
+}
+
+// landingField reads one of the commands the panel offers out of a settings
+// frame, where an absent landing block reads the same as an empty command.
+func landingField(settings map[string]any, name string) string {
+	landing, _ := settings["landing"].(map[string]any)
+	value, _ := landing[name].(string)
+	return value
 }
 
 // The tree is on the review branch by the time a restarted daemon can look, so

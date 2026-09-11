@@ -245,10 +245,16 @@ html, body {
 /* A destructive-ish action inside a settings row: sized like the note beneath
    it, not like the Comment button, so it reads as something you reach for
    deliberately. */
-/* The merge command, sitting where it can be read and copied. Not a button:
-   the daemon does not run this one. */
+/* One way to land the review: what it does, then the command itself. The gap
+   above separates it from the previous one, so three commands read as three
+   choices rather than as a script to run top to bottom. */
+.setting .landing { margin-top: 0.5rem; }
+.setting .landing .note { margin: 0; }
+
+/* The command itself, sitting where it can be read and copied. Not a button:
+   the daemon runs none of these. */
 .setting .merge {
-  margin: 0.35rem 0 0;
+  margin: 0.2rem 0 0;
   padding: 0.3rem 0.4rem;
   background: var(--bg);
   border: 1px solid var(--rule);

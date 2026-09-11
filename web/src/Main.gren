@@ -1441,8 +1441,12 @@ claudeLabel settings =
 
 The daemon does not merge. A merge can conflict, and a conflict raised inside a
 page that has no diff and no way out is worse than no button at all -- so what
-the panel offers is the command, ready to be read and run somewhere that can
+the panel offers is the commands, ready to be read and run somewhere that can
 answer it.
+
+Both merges are offered, and the delete after them, because the reviewer is as
+often a writer as a programmer: a branch name and the word "merge" are not an
+instruction to someone who has never typed one.
 
 -}
 viewBranch : Protocol.Settings -> Html Msg
@@ -1456,18 +1460,42 @@ viewBranch settings =
                 [ [ Html.div [] [ Html.text settings.branch ]
                   , Html.p [ Attr.class "note" ] [ Html.text (commitsLabel settings) ]
                   ]
-                , if String.isEmpty settings.mergeCommand then
-                    []
-
-                  else
-                    [ Html.pre
-                        [ Attr.class "merge"
-                        , Attr.title "Run this where git can answer a conflict"
-                        ]
-                        [ Html.text settings.mergeCommand ]
-                    ]
+                , viewLanding settings.landing
                 ]
             )
+        ]
+
+
+{-| The three ways a review ends, each under the words that say what it does.
+
+The delete carries its own warning: `-d` is refused after a squash merge, since
+the single commit that landed is not the commits on the branch and git cannot
+tell they arrived. Offering `-D` instead would be offering it before the look
+at the diff that makes it safe.
+
+-}
+viewLanding : Protocol.Landing -> Array (Html Msg)
+viewLanding landing =
+    if String.isEmpty landing.merge then
+        []
+
+    else
+        [ viewCommand "keep the commits, one per turn" landing.merge
+        , viewCommand "or fold the review into one commit" landing.squash
+        , viewCommand "then, if you want the branch gone" landing.delete
+        ]
+
+
+viewCommand : String -> String -> Html Msg
+viewCommand why command =
+    Html.div
+        [ Attr.class "landing" ]
+        [ Html.p [ Attr.class "note" ] [ Html.text why ]
+        , Html.pre
+            [ Attr.class "merge"
+            , Attr.title "Run this where git can answer a conflict"
+            ]
+            [ Html.text command ]
         ]
 
 

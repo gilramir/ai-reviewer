@@ -1,6 +1,7 @@
 module Protocol exposing
     ( Anchor
     , Conversation
+    , Landing
     , Message
     , Role(..)
     , ServerMsg(..)
@@ -102,6 +103,20 @@ type alias Conversation =
     }
 
 
+{-| The commands a finished review ends in, as the daemon spells them out.
+
+Three rather than one, because "merge it" is two different decisions -- keep
+the turn-by-turn commits or fold them into one -- and because the branch is
+then left behind. All three are empty when there is nothing to land.
+
+-}
+type alias Landing =
+    { merge : String
+    , squash : String
+    , delete : String
+    }
+
+
 {-| What the daemon is running Claude with.
 
 Two models, not one: `model` is what the daemon asks for and may be empty --
@@ -121,7 +136,7 @@ type alias Settings =
     , branch : String
     , baseBranch : String
     , commits : Int
-    , mergeCommand : String
+    , landing : Landing
     , maxBudgetUsd : Float
     , spentUsd : Float
     , live : Int
@@ -249,7 +264,7 @@ settingsDecoder =
             , branch = branch.branch
             , baseBranch = branch.baseBranch
             , commits = branch.commits
-            , mergeCommand = branch.mergeCommand
+            , landing = branch.landing
             , maxBudgetUsd = spend.maxBudgetUsd
             , spentUsd = spend.spentUsd
             , live = spend.live
@@ -303,21 +318,37 @@ branchDecoder :
         { branch : String
         , baseBranch : String
         , commits : Int
-        , mergeCommand : String
+        , landing : Landing
         }
 branchDecoder =
     Decode.map4
-        (\branch base commits merge ->
+        (\branch base commits land ->
             { branch = branch
             , baseBranch = base
             , commits = commits
-            , mergeCommand = merge
+            , landing = land
             }
         )
         (optionalString "branch")
         (optionalString "baseBranch")
         (optionalInt "commits")
-        (optionalString "mergeCommand")
+        landingDecoder
+
+
+landingDecoder : Decoder Landing
+landingDecoder =
+    Decode.oneOf
+        [ Decode.field "landing"
+            (Decode.map3
+                (\merge squash remove ->
+                    { merge = merge, squash = squash, delete = remove }
+                )
+                (optionalString "merge")
+                (optionalString "squash")
+                (optionalString "delete")
+            )
+        , Decode.succeed { merge = "", squash = "", delete = "" }
+        ]
 
 
 spendDecoder :
