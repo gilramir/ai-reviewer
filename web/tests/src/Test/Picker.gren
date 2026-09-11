@@ -1,0 +1,183 @@
+module Test.Picker exposing (suites)
+
+{-| Choosing a document out of a repository's worth of Markdown: which paths a
+query leaves, where a path's folder ends, and where the arrow keys land.
+
+The fixture is the shape that broke the tab strip -- a handful of files at the
+root and several folders under it, some of them holding a `README.md` of their
+own, all sorted the way the server sends them.
+
+-}
+
+import Expect
+import Picker
+import Task
+import Test.Runner.UnitNode as U
+
+
+{-| Documents as the server lists them: relative, slash-separated, sorted.
+-}
+docs : Array String
+docs =
+    [ "CONTRIBUTING.md"
+    , "README.md"
+    , "docs/README.md"
+    , "docs/backendClaude.md"
+    , "docs/design/anchors.md"
+    , "internal/review/README.md"
+    ]
+
+
+expect : Expect.Expectation -> Task.Task String Expect.Expectation
+expect =
+    Task.succeed
+
+
+suites : Array U.Suite
+suites =
+    [ filtering
+    , splittingAPath
+    , walkingTheList
+    ]
+
+
+filtering : U.Suite
+filtering =
+    U.suite
+        { name = "Picker.matching"
+        , setUpSuite = U.noSuiteFixture
+        , tearDownSuite = U.noTearDown
+        , setUp = U.noFixture
+        , tearDown = U.noTearDown
+        , tests =
+            [ U.test "an empty query leaves every document" <| \_ ->
+                expect (Expect.equal docs (Picker.matching "" docs))
+            , U.test "a query of blanks leaves every document" <| \_ ->
+                expect (Expect.equal docs (Picker.matching "   " docs))
+            , U.test "a fragment of the file name" <| \_ ->
+                expect
+                    (Expect.equal
+                        [ "docs/backendClaude.md" ]
+                        (Picker.matching "backend" docs)
+                    )
+            , U.test "case does not matter" <| \_ ->
+                expect
+                    (Expect.equal
+                        [ "docs/backendClaude.md" ]
+                        (Picker.matching "BACKENDCLAUDE" docs)
+                    )
+            , U.test "a folder's name gathers what is in it" <| \_ ->
+                expect
+                    (Expect.equal
+                        [ "docs/README.md", "docs/backendClaude.md", "docs/design/anchors.md" ]
+                        (Picker.matching "docs/" docs)
+                    )
+            , U.test "two words, either order, narrow to one document" <| \_ ->
+                -- The point of matching words rather than a substring: which of
+                -- a path's two names comes to mind first is not something to
+                -- make the reviewer guess.
+                expect
+                    (Expect.equal
+                        (Picker.matching "review readme" docs)
+                        (Picker.matching "readme review" docs)
+                    )
+            , U.test "the narrowed document is the one meant" <| \_ ->
+                expect
+                    (Expect.equal
+                        [ "internal/review/README.md" ]
+                        (Picker.matching "review readme" docs)
+                    )
+            , U.test "a word that matches nothing empties the list" <| \_ ->
+                expect (Expect.equal [] (Picker.matching "protocol" docs))
+            , U.test "one word matching and one not empties the list" <| \_ ->
+                expect (Expect.equal [] (Picker.matching "docs protocol" docs))
+            , U.test "the order the server sent is kept" <| \_ ->
+                -- Nothing here ranks on how well a path matched: a list that
+                -- rearranges itself as you type is a list you cannot point at.
+                expect
+                    (Expect.equal
+                        [ "README.md", "docs/README.md", "internal/review/README.md" ]
+                        (Picker.matching "readme" docs)
+                    )
+            ]
+        }
+
+
+splittingAPath : U.Suite
+splittingAPath =
+    U.suite
+        { name = "Picker.folder and Picker.name"
+        , setUpSuite = U.noSuiteFixture
+        , tearDownSuite = U.noTearDown
+        , setUp = U.noFixture
+        , tearDown = U.noTearDown
+        , tests =
+            [ U.test "a document at the root has no folder" <| \_ ->
+                expect (Expect.equal "" (Picker.folder "README.md"))
+            , U.test "a document at the root is all name" <| \_ ->
+                expect (Expect.equal "README.md" (Picker.name "README.md"))
+            , U.test "one folder deep" <| \_ ->
+                expect (Expect.equal "docs" (Picker.folder "docs/README.md"))
+            , U.test "the name after one folder" <| \_ ->
+                expect (Expect.equal "README.md" (Picker.name "docs/README.md"))
+            , U.test "the whole path down to the last slash is the folder" <| \_ ->
+                expect (Expect.equal "internal/review" (Picker.folder "internal/review/README.md"))
+            , U.test "the name after several folders" <| \_ ->
+                expect (Expect.equal "anchors.md" (Picker.name "docs/design/anchors.md"))
+            , U.test "documents in one folder share a heading" <| \_ ->
+                -- What the grouped list turns on: a heading is drawn wherever
+                -- this answer changes, and the paths arrive sorted.
+                expect
+                    (Expect.equal
+                        (Picker.folder "docs/README.md")
+                        (Picker.folder "docs/backendClaude.md")
+                    )
+            , U.test "a folder and a folder under it are not the same heading" <| \_ ->
+                expect
+                    (Expect.notEqual
+                        (Picker.folder "docs/README.md")
+                        (Picker.folder "docs/design/anchors.md")
+                    )
+            ]
+        }
+
+
+{-| The highlight's position, which is an index into a list that changes under
+it: filtered by every keystroke, and re-sent whenever a Markdown file appears on
+disk or leaves.
+-}
+walkingTheList : U.Suite
+walkingTheList =
+    U.suite
+        { name = "Picker.at and Picker.move"
+        , setUpSuite = U.noSuiteFixture
+        , tearDownSuite = U.noTearDown
+        , setUp = U.noFixture
+        , tearDown = U.noTearDown
+        , tests =
+            [ U.test "a cursor inside the list stays where it is" <| \_ ->
+                expect (Expect.equal 2 (Picker.at 6 2))
+            , U.test "a cursor left pointing past the end comes back to the last row" <| \_ ->
+                expect (Expect.equal 5 (Picker.at 6 40))
+            , U.test "an empty list has no row but zero" <| \_ ->
+                expect (Expect.equal 0 (Picker.at 0 3))
+            , U.test "down moves one row" <| \_ ->
+                expect (Expect.equal 3 (Picker.move 6 1 2))
+            , U.test "up moves one row" <| \_ ->
+                expect (Expect.equal 1 (Picker.move 6 -1 2))
+            , U.test "down from the last row wraps to the first" <| \_ ->
+                expect (Expect.equal 0 (Picker.move 6 1 5))
+            , U.test "up from the first row wraps to the last" <| \_ ->
+                expect (Expect.equal 5 (Picker.move 6 -1 0))
+            , U.test "down from a cursor past the end lands on the first row" <| \_ ->
+                -- Clamped to the last row first, then wrapped, so a list that
+                -- shrank under the cursor still moves one row at a time.
+                expect (Expect.equal 0 (Picker.move 6 1 40))
+            , U.test "up from a cursor past the end lands on the row before the last" <| \_ ->
+                expect (Expect.equal 4 (Picker.move 6 -1 40))
+            , U.test "moving in an empty list stays at zero" <| \_ ->
+                expect (Expect.equal 0 (Picker.move 0 1 0))
+            , U.test "a list of one row goes nowhere" <| \_ ->
+                expect (Expect.equal 0 (Picker.move 1 1 0))
+            ]
+        }

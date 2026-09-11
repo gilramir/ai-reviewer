@@ -21,6 +21,7 @@ import Json.Decode as Decode
 import Json.Encode as Encode
 import Marks exposing (Range)
 import Math
+import Picker
 import Protocol exposing (Anchor, Role(..), ServerMsg(..), Thread, ThreadStatus(..))
 import Task
 
@@ -78,6 +79,7 @@ type alias Model =
     { theme : String
     , docs : Array String
     , opened : String
+    , picking : Maybe Picking
     , current : Maybe Doc
     , threads : Array Thread
     , busy : Bool
@@ -88,6 +90,21 @@ type alias Model =
     , settings : Maybe Protocol.Settings
     , settingsOpen : Bool
     , error : Maybe String
+    }
+
+
+{-| The document picker, while it is open.
+
+`query` is what has been typed to narrow the list; `cursor` is the row the
+keyboard is on, as an index into the documents that query leaves. It is an index
+rather than a path because the row a reviewer means by "the next one" is a
+position in the list in front of them, and that list changes with every
+keystroke.
+
+-}
+type alias Picking =
+    { query : String
+    , cursor : Int
     }
 
 
@@ -142,6 +159,7 @@ init flags =
         { theme = flags.theme
         , docs = []
         , opened = ""
+        , picking = Nothing
         , current = Nothing
         , threads = []
         , busy = False
@@ -165,6 +183,12 @@ type Msg
     | SelectionMade Decode.Value
     | ConnectionState String
     | OpenDoc String
+    | TogglePicker
+    | ClosePicker
+    | PickerTyped String
+    | PickerMoved Int
+    | PickerChose
+    | PickerSettled
     | DraftChanged String
     | SubmitComment
     | CancelComment
@@ -226,9 +250,87 @@ update msg model =
             stay { model | connection = state }
 
         OpenDoc path ->
-            { model = { model | composing = Nothing, opened = path }
+            { model = { model | composing = Nothing, opened = path, picking = Nothing }
             , command = socketOut (Protocol.openDoc path)
             }
+
+        TogglePicker ->
+            when model.picking is
+                Just _ ->
+                    stay { model | picking = Nothing }
+
+                Nothing ->
+                    -- The list opens on the document being read, because that
+                    -- is what the reviewer is moving away from and the arrows
+                    -- should start from where they are. The settings panel
+                    -- closes: two panels hanging off one bar is noise.
+                    let
+                        cursor =
+                            Array.findFirst (\path -> path == model.opened) model.docs
+                                |> Maybe.map (\found -> found.index)
+                                |> Maybe.withDefault 0
+                    in
+                    { model =
+                        { model
+                            | picking = Just { query = "", cursor = cursor }
+                            , settingsOpen = False
+                        }
+                    , command =
+                        Cmd.batch
+                            [ focusPickerFilter
+                            , showPickerRow cursor
+                            ]
+                    }
+
+        ClosePicker ->
+            stay { model | picking = Nothing }
+
+        PickerTyped query ->
+            when model.picking is
+                Just _ ->
+                    -- A new query is a new list, and the highlight belongs on
+                    -- its first row: three letters in, the document wanted is
+                    -- at the top rather than wherever the cursor had got to.
+                    stay { model | picking = Just { query = query, cursor = 0 } }
+
+                Nothing ->
+                    stay model
+
+        PickerMoved delta ->
+            when model.picking is
+                Just picking ->
+                    let
+                        cursor =
+                            Picker.move (Array.length (shownDocs model picking)) delta picking.cursor
+                    in
+                    { model = { model | picking = Just { picking | cursor = cursor } }
+                    , command = showPickerRow cursor
+                    }
+
+                Nothing ->
+                    stay model
+
+        PickerChose ->
+            when model.picking is
+                Just picking ->
+                    let
+                        shown =
+                            shownDocs model picking
+                    in
+                    when Array.get (Picker.at (Array.length shown) picking.cursor) shown is
+                        Just path ->
+                            update (OpenDoc path) model
+
+                        Nothing ->
+                            stay model
+
+                Nothing ->
+                    stay model
+
+        PickerSettled ->
+            -- Nothing to do: the box took focus and the row came into view, or
+            -- the panel is already gone.
+            stay model
 
         DraftChanged text ->
             when model.composing is
@@ -363,7 +465,7 @@ update msg model =
                     stay model
 
         ToggleSettings ->
-            stay { model | settingsOpen = not model.settingsOpen }
+            stay { model | settingsOpen = not model.settingsOpen, picking = Nothing }
 
         ModelPicked name ->
             -- The panel keeps showing the old model until the daemon confirms
@@ -723,6 +825,78 @@ threadElementId threadId =
     "thread-" ++ threadId
 
 
+{-| Scroll the picker's list so the highlighted row is in it.
+
+Only when it is not: a list being walked with the arrow keys should move by the
+one row it has to and no further, so that the rows around the highlight stay
+where the eye left them. Without this the keyboard walks off the bottom of a
+scrolling list and the highlight is somewhere nobody can see.
+
+-}
+showPickerRow : Int -> Cmd Msg
+showPickerRow cursor =
+    Dom.getElement (pickerRowId cursor)
+        |> Task.andThen
+            (\row ->
+                Dom.getElement pickerListId
+                    |> Task.andThen
+                        (\list ->
+                            Dom.getViewportOf pickerListId
+                                |> Task.andThen
+                                    (\pane ->
+                                        let
+                                            -- The row's top and bottom measured
+                                            -- from the top of everything the
+                                            -- list can scroll through.
+                                            top =
+                                                pane.viewport.y + row.element.y - list.element.y
+
+                                            bottom =
+                                                top + row.element.height
+                                        in
+                                        if top < pane.viewport.y then
+                                            Dom.setViewportOf pickerListId 0 top
+
+                                        else if bottom > pane.viewport.y + pane.viewport.height then
+                                            Dom.setViewportOf pickerListId 0 (bottom - pane.viewport.height)
+
+                                        else
+                                            Task.succeed {}
+                                    )
+                        )
+            )
+        |> Task.attempt (\_ -> PickerSettled)
+
+
+{-| Put the caret in the filter box as the picker opens.
+
+`autofocus` is not enough. It is honoured for elements that are in the page when
+it loads, and this input is inserted long afterwards; without this the keys go
+to whatever had focus -- the button that opened the panel, which then treats the
+space in "release notes" as another click and shuts it again.
+
+-}
+focusPickerFilter : Cmd Msg
+focusPickerFilter =
+    Dom.focus pickerFilterId
+        |> Task.attempt (\_ -> PickerSettled)
+
+
+pickerFilterId : String
+pickerFilterId =
+    "picker-filter"
+
+
+pickerListId : String
+pickerListId =
+    "picker-list"
+
+
+pickerRowId : Int -> String
+pickerRowId cursor =
+    "picker-row-" ++ String.fromInt cursor
+
+
 carries : String -> String -> Thread -> Bool
 carries quote body thread =
     thread.anchor.quote == quote
@@ -820,9 +994,7 @@ viewTopBar : Model -> Html Msg
 viewTopBar model =
     Html.header
         [ Attr.class "topbar" ]
-        [ Html.nav
-            [ Attr.class "docs" ]
-            (Array.map (viewDocTab model.current) model.docs)
+        [ viewDocButton model
         , Html.div
             [ Attr.class "state" ]
             [ if model.busy then
@@ -835,6 +1007,7 @@ viewTopBar model =
             , viewSettingsButton model
             , viewConnection model.connection
             ]
+        , viewDocPicker model
         , viewSettingsPanel model
         ]
 
@@ -1250,27 +1423,199 @@ money amount =
         ++ String.padLeft 2 '0' (String.fromInt (Math.modBy 100 cents))
 
 
-viewDocTab : Maybe Doc -> String -> Html Msg
-viewDocTab current path =
-    let
-        isCurrent =
-            when current is
-                Just doc ->
-                    doc.path == path
+{-| The documents the picker is offering: all of them, less what the query rules
+out.
+-}
+shownDocs : Model -> Picking -> Array String
+shownDocs model picking =
+    Picker.matching picking.query model.docs
 
-                Nothing ->
-                    False
+
+{-| The name of the open document, and the way to every other one.
+
+This is where a strip of tabs used to be, one per document, and it did not
+survive being pointed at a repository: the server lists every `.md` under the
+review root, and fifty of them scroll sideways in a strip that can push the
+document being read out of sight. What a top bar owes the reviewer is the name
+of the thing they are reading; the rest is a list, and a list belongs behind a
+button.
+
+-}
+viewDocButton : Model -> Html Msg
+viewDocButton model =
+    Html.button
+        [ Attr.classList
+            [ { class = "doc-toggle", enabled = True }
+            , { class = "active", enabled = model.picking /= Nothing }
+            ]
+        , Attr.title "Choose a document to review"
+        , Events.onClick TogglePicker
+        ]
+        [ Html.span
+            [ Attr.class "doc-open" ]
+            [ Html.text
+                (if String.isEmpty model.opened then
+                    "choose a document"
+
+                 else
+                    model.opened
+                )
+            ]
+        , Html.span [ Attr.class "caret" ] [ Html.text "▾" ]
+        ]
+
+
+{-| The list of documents, filtered by what has been typed into it.
+
+Typing narrows, the arrows walk, Enter opens and Escape closes -- the keyboard
+alone is enough, which is the point of a filter box over a strip of tabs. The
+rows are grouped under their folder because a repository's Markdown is mostly
+`README.md` files that only differ by which directory they are in.
+
+-}
+viewDocPicker : Model -> Html Msg
+viewDocPicker model =
+    when model.picking is
+        Nothing ->
+            Html.text ""
+
+        Just picking ->
+            let
+                shown =
+                    shownDocs model picking
+            in
+            Html.div
+                [ Attr.class "picker" ]
+                [ Html.input
+                    [ Attr.class "picker-filter"
+                    , Attr.id pickerFilterId
+                    , Attr.type_ "text"
+                    , Attr.placeholder "filter by name or folder…"
+                    , Attr.value picking.query
+                    , Attr.spellcheck False
+                    , Events.onInput PickerTyped
+                    , pickerKeys
+                    ]
+                    []
+                , Html.div
+                    [ Attr.class "picker-list", Attr.id pickerListId ]
+                    (viewPickerRows
+                        { opened = model.opened
+                        , cursor = Picker.at (Array.length shown) picking.cursor
+                        }
+                        shown
+                    )
+                , Html.p
+                    [ Attr.class "note" ]
+                    [ Html.text (pickerNote { shown = Array.length shown, all = Array.length model.docs }) ]
+                ]
+
+
+{-| What the list has to say about itself: a count, or why it is empty.
+-}
+pickerNote : { shown : Int, all : Int } -> String
+pickerNote counts =
+    if counts.all == 0 then
+        "no Markdown under the review root"
+
+    else if counts.shown == 0 then
+        "nothing matches, out of " ++ documentTally counts.all
+
+    else if counts.shown == counts.all then
+        documentTally counts.all
+
+    else
+        String.fromInt counts.shown ++ " of " ++ documentTally counts.all
+
+
+{-| A plain count of documents. `documentCount` in the settings panel counts the
+*other* documents, which is a different sentence.
+-}
+documentTally : Int -> String
+documentTally count =
+    if count == 1 then
+        "one document"
+
+    else
+        String.fromInt count ++ " documents"
+
+
+{-| The rows, with a folder's name above the first document in it.
+
+A heading appears wherever the folder changes, which is every place it needs to
+because the server sends the paths sorted and a filter only ever removes rows. A
+row's index is its position in the list the cursor counts, so the headings are
+pushed in beside the rows they belong to rather than being a separate pass with
+its own idea of the numbering.
+
+-}
+viewPickerRows : { opened : String, cursor : Int } -> Array String -> Array (Html Msg)
+viewPickerRows state shown =
+    Array.indexedMap
+        (\index path ->
+            let
+                -- The first row always gets one; after that, only where the
+                -- folder changes. The test is written this way round because
+                -- `Array.get -1` is the *last* element, not nothing, and the
+                -- first row of a filtered list that happens to end in the same
+                -- folder would quietly lose its heading.
+                heading =
+                    if index == 0 then
+                        True
+
+                    else
+                        when Array.get (index - 1) shown is
+                            Just above ->
+                                Picker.folder above /= Picker.folder path
+
+                            Nothing ->
+                                True
+            in
+            if heading then
+                [ viewPickerFolder (Picker.folder path), viewPickerRow state index path ]
+
+            else
+                [ viewPickerRow state index path ]
+        )
+        shown
+        |> Array.flatten
+
+
+{-| A folder's heading. The root of the review is "/", having no name here: the
+client is told relative paths and never learns what the directory is called.
+-}
+viewPickerFolder : String -> Html Msg
+viewPickerFolder folder =
+    Html.div
+        [ Attr.class "picker-folder" ]
+        [ Html.text
+            (if String.isEmpty folder then
+                "/"
+
+             else
+                folder ++ "/"
+            )
+        ]
+
+
+viewPickerRow : { opened : String, cursor : Int } -> Int -> String -> Html Msg
+viewPickerRow state index path =
+    let
+        isOpen =
+            path == state.opened
     in
     Html.button
         [ Attr.classList
-            [ { class = "doc-tab", enabled = True }
-            , { class = "active", enabled = isCurrent }
+            [ { class = "picker-doc", enabled = True }
+            , { class = "on", enabled = index == state.cursor }
+            , { class = "open", enabled = isOpen }
             ]
+        , Attr.id (pickerRowId index)
         , Attr.title
-            (if isCurrent then
-                -- Clicking the open document re-reads it from disk. That is
-                -- worth saying, because there is nothing about a tab that
-                -- suggests the one already selected does anything at all.
+            (if isOpen then
+                -- Choosing the open document re-reads it from disk. Worth
+                -- saying, because nothing about a row suggests that the one
+                -- already open does anything at all.
                 "Reload " ++ path ++ " from disk"
 
              else
@@ -1278,7 +1623,42 @@ viewDocTab current path =
             )
         , Events.onClick (OpenDoc path)
         ]
-        [ Html.text path ]
+        [ Html.text (Picker.name path) ]
+
+
+{-| The four keys the filter box answers to: the arrows walk the list, Enter
+opens the row under the highlight, Escape puts the list away.
+
+The arrows and Enter have to preventDefault. Enter in a text input submits
+something in some browsers, and the arrows move the caret inside the query --
+which looks like nothing happening, in a box whose contents are one line long.
+
+-}
+pickerKeys : Html.Attribute Msg
+pickerKeys =
+    Events.preventDefaultOn "keydown"
+        (Decode.field "key" Decode.string
+            |> Decode.andThen pickerKey
+        )
+
+
+pickerKey : String -> Decode.Decoder { message : Msg, preventDefault : Bool }
+pickerKey key =
+    when key is
+        "ArrowDown" ->
+            Decode.succeed { message = PickerMoved 1, preventDefault = True }
+
+        "ArrowUp" ->
+            Decode.succeed { message = PickerMoved (-1), preventDefault = True }
+
+        "Enter" ->
+            Decode.succeed { message = PickerChose, preventDefault = True }
+
+        "Escape" ->
+            Decode.succeed { message = ClosePicker, preventDefault = False }
+
+        _ ->
+            Decode.fail "not a picker key"
 
 
 viewError : Maybe String -> Html Msg

@@ -1,0 +1,119 @@
+module Picker exposing
+    ( at
+    , folder
+    , matches
+    , matching
+    , move
+    , name
+    )
+
+{-| Choosing which document to review, out of however many there are.
+
+The first version of this was a strip of tabs across the top bar, one per
+document. That works for the handful of files in a `docs/` directory and falls
+apart everywhere else: the review root is often a repository, the server walks
+it for every `.md` under it, and fifty of them turn into a sideways-scrolling
+strip in which the document actually being read can be scrolled out of sight.
+Every file in the tree was on screen at all times, whether or not anybody had
+asked for one.
+
+So the top bar names the open document and nothing else, and the rest are behind
+it in a list that is filtered by typing. That list needs three things this module
+provides and a browser is not required for: which paths answer to what has been
+typed, where a path's folder ends and its name begins, and where a keyboard's
+highlight lands. Like `Marks`, it lives outside the view so it can be tested
+under node -- a module that imports `Html` cannot be compiled for node at all.
+
+-}
+
+import Array exposing (Array)
+import Math
+
+
+{-| Whether a path answers to what has been typed.
+
+Every word of the query has to occur somewhere in the path, in any order and in
+either case: `back cl` finds `docs/backendClaude.md`, and so does `claude docs`.
+Order-independent because a path is two names -- a folder and a file -- and
+which one comes to mind first is not something to make the reviewer guess.
+
+An empty query matches everything, which is what the list shows on opening.
+
+-}
+matches : String -> String -> Bool
+matches query path =
+    let
+        haystack =
+            String.toLower path
+    in
+    String.words (String.toLower query)
+        |> Array.all (\term -> String.contains term haystack)
+
+
+{-| The documents a query leaves, in the order they arrived.
+
+The server sends them sorted, so paths in one folder are already together and
+stay that way; nothing here reorders on how well a path matched. A list that
+rearranges itself as you type is a list you cannot point at.
+
+-}
+matching : String -> Array String -> Array String
+matching query paths =
+    Array.keepIf (matches query) paths
+
+
+{-| The folder part of a path, empty for a document at the root of the review.
+-}
+folder : String -> String
+folder path =
+    when String.lastIndexOf "/" path is
+        Just slash ->
+            String.takeFirst slash path
+
+        Nothing ->
+            ""
+
+
+{-| The file part of a path: what the document is called.
+-}
+name : String -> String
+name path =
+    when String.lastIndexOf "/" path is
+        Just slash ->
+            String.dropFirst (slash + 1) path
+
+        Nothing ->
+            path
+
+
+{-| Which row the highlight is on, in a list of this many rows.
+
+The stored cursor can point past the end: the list is re-filtered as the
+reviewer types, and the server re-sends it whenever a Markdown file appears or
+leaves. A cursor that outlived its row comes back to the last one rather than to
+nothing at all, so Enter always has something to open.
+
+-}
+at : Int -> Int -> Int
+at rows cursor =
+    if rows <= 0 then
+        0
+
+    else
+        clamp 0 (rows - 1) cursor
+
+
+{-| Where an arrow key takes the highlight.
+
+It wraps at both ends. The list is short and the reviewer is holding a key
+down; stopping dead at the bottom of a filtered list of three is a worse answer
+than coming back round to the top.
+
+-}
+move : Int -> Int -> Int -> Int
+move rows delta cursor =
+    if rows <= 0 then
+        0
+
+    else
+        Math.modBy rows (at rows cursor + delta)

@@ -2,21 +2,24 @@ module Check exposing (main)
 
 {-| The test program for the client's pure logic.
 
-`Marks` is the only module here that can be tested away from a browser, and it
-is the one worth testing: it decides where a reviewer's comment is shown in a
-document, and every bug in that area so far has been a whitespace or offset
-question rather than anything to do with the DOM.
+Two modules can be tested away from a browser, and they are the two worth
+testing. `Marks` decides where a reviewer's comment is shown in a document, and
+every bug in that area so far has been a whitespace or offset question rather
+than anything to do with the DOM. `Picker` decides which documents a typed query
+leaves and where the arrow keys land in them, which is arithmetic over a list
+that changes underneath the cursor.
 
 Two platforms meet in this directory. `web/` is a browser application and this
-is a node one, which is fine as long as the module under test imports nothing
-browser-specific — `Marks` imports `Array` and nothing else. The main module is
-`Check` rather than `Main` only because `../src` is on the source path and
-already has a `Main`.
+is a node one, which is fine as long as the modules under test import nothing
+browser-specific — `Marks` and `Picker` import `Array` and `Math` and nothing
+else. The main module is `Check` rather than `Main` only because `../src` is on
+the source path and already has a `Main`.
 
 -}
 
 import Node
 import Test.Marks
+import Test.Picker
 import Test.Runner.UnitNode as U
 
 
@@ -25,5 +28,5 @@ main =
     U.run
         { name = "ai-reviewer-web-tests"
         , version = "1.0.0"
-        , suites = Test.Marks.suites
+        , suites = Array.append Test.Marks.suites Test.Picker.suites
         }

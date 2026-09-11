@@ -133,6 +133,21 @@ Authentication is on by default. `--no-auth` is refused unless the bind address
 is loopback — the one misconfiguration that would silently publish your
 documents to the network.
 
+## Choosing a document
+
+The top bar names the document you are reading, and clicking that name opens the
+list of the others: type to narrow it, arrows to walk it, Enter to open, Escape
+to put it away. The rows are grouped under their folder, because a repository's
+Markdown is mostly `README.md` files that differ only in which directory they
+are in, and the words are matched in any order — `review readme` finds
+`internal/review/README.md`, and so does `readme review`.
+
+This used to be a strip of tabs, one per document, and it did not survive being
+pointed at a repository rather than a `docs/` directory: the daemon lists every
+`.md` under the review root, fifty of them scroll sideways, and the name of the
+document actually open can be scrolled out of sight. A top bar owes you the name
+of the thing you are reading; the rest is a list, and a list belongs behind it.
+
 ## What Claude is running with
 
 The pill in the top bar names the model — `opus`, `sonnet`, or *default model*
@@ -209,8 +224,8 @@ only the Markdown, so when you run `dot -Tpng flow.dot -o flow.png` yourself —
 which the model cannot do, having no shell — the documents that embed that PNG
 re-render on their own. Their image URLs change with the file, and an `<img>`
 whose `src` has changed is one the browser actually fetches again. There is
-nothing to click; if you ever do want to force a re-read, clicking the open
-document's own tab is one.
+nothing to click; if you ever do want to force a re-read, choosing the open
+document again in the picker is one.
 
 Only images are rewritten, and only relative ones that stay inside the review
 root: an absolute URL, a `data:` URI, or a path climbing out of the root is left
@@ -284,9 +299,10 @@ internal/claudeproc/  the long-lived claude process, one per document
                       (protocol write-up: docs/backendClaude.md)
 internal/gitstore/    one commit per turn; snapshots outside a repo
 internal/server/      HTTP, auth, WebSocket
-web/src/              Gren: Doc (decoder), Protocol (wire), Marks (anchoring), Main (app)
+web/src/              Gren: Doc (decoder), Protocol (wire), Marks (anchoring),
+                      Picker (the document list), Main (app)
 web/static/           index.html, ports.js, style.css, favicon.ico if you add one
-web/tests/            Gren tests for Marks, run under gren-unit-node
+web/tests/            Gren tests for Marks and Picker, run under gren-unit-node
 ```
 
 ## Tests
@@ -309,12 +325,13 @@ emits. The protocol itself is documented in
 
 `web/tests` is a node application built over the same `web/src`, so the browser
 code can be tested without a browser. That works for anything importing only
-`gren-lang/core`, which is why the anchoring logic lives in `Marks` rather than
+`gren-lang/core`, which is why the anchoring logic lives in `Marks`, and the
+document picker's filtering and cursor arithmetic in `Picker`, rather than
 inside the view: a module that imports `Html` cannot be compiled for node at
 all. The main module there is `Check` rather than `Main` only because `../src` is
 on the source path and already has one.
 
-The suite is the record of every anchoring bug found so far — a quote whose line
+The `Marks` suite is the record of every anchoring bug found so far — a quote whose line
 wrap is a newline where the document's is a space, a passage inside `**[link]()**`,
 a highlight that has to cross into a code span — plus the one limit that is not
 fixed: a selection spanning two blocks files its comment but is not highlighted.
