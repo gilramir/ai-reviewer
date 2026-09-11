@@ -60,6 +60,7 @@ suites =
     [ findingAPassage
     , passagesThatAreNotThere
     , splittingARun
+    , twoHighlightsAtOnce
     ]
 
 
@@ -165,6 +166,11 @@ passagesThatAreNotThere =
 {-| A range is in document coordinates and a run of text knows only where it
 starts, so every case here is about clipping one to the other. That clipping is
 what lets one passage cross from one element into the next.
+
+The second array is the passages that changed since the session started. It is
+empty in most of these: the clipping is the same whichever kind of highlight is
+being clipped, and the cases where the two meet are gathered at the end.
+
 -}
 splittingARun : U.Suite
 splittingARun =
@@ -178,67 +184,147 @@ splittingARun =
             [ U.test "a range wholly inside the run" <| \_ ->
                 expect
                     (Expect.equal
-                        [ { text = "ab", thread = Nothing }
-                        , { text = "cde", thread = Just "t1" }
-                        , { text = "fg", thread = Nothing }
+                        [ { text = "ab", thread = Nothing, changed = False }
+                        , { text = "cde", thread = Just "t1", changed = False }
+                        , { text = "fg", thread = Nothing, changed = False }
                         ]
-                        (Marks.split [ { start = 2, end = 5, thread = "t1" } ] 0 "abcdefg")
+                        (Marks.split [ { start = 2, end = 5, thread = "t1" } ] [] 0 "abcdefg")
                     )
             , U.test "a range that began in an earlier run" <| \_ ->
                 expect
                     (Expect.equal
-                        [ { text = "ab", thread = Just "t1" }, { text = "cdefg", thread = Nothing } ]
-                        (Marks.split [ { start = 0, end = 12, thread = "t1" } ] 10 "abcdefg")
+                        [ { text = "ab", thread = Just "t1", changed = False }, { text = "cdefg", thread = Nothing, changed = False } ]
+                        (Marks.split [ { start = 0, end = 12, thread = "t1" } ] [] 10 "abcdefg")
                     )
             , U.test "a range that continues into a later run" <| \_ ->
                 expect
                     (Expect.equal
-                        [ { text = "ab", thread = Nothing }, { text = "cdefg", thread = Just "t1" } ]
-                        (Marks.split [ { start = 12, end = 40, thread = "t1" } ] 10 "abcdefg")
+                        [ { text = "ab", thread = Nothing, changed = False }, { text = "cdefg", thread = Just "t1", changed = False } ]
+                        (Marks.split [ { start = 12, end = 40, thread = "t1" } ] [] 10 "abcdefg")
                     )
             , U.test "a range that swallows the run whole" <| \_ ->
                 expect
                     (Expect.equal
-                        [ { text = "abcdefg", thread = Just "t1" } ]
-                        (Marks.split [ { start = 0, end = 100, thread = "t1" } ] 10 "abcdefg")
+                        [ { text = "abcdefg", thread = Just "t1", changed = False } ]
+                        (Marks.split [ { start = 0, end = 100, thread = "t1" } ] [] 10 "abcdefg")
                     )
             , U.test "a run no range touches" <| \_ ->
                 expect
                     (Expect.equal
-                        [ { text = "abcdefg", thread = Nothing } ]
-                        (Marks.split [ { start = 50, end = 60, thread = "t1" } ] 10 "abcdefg")
+                        [ { text = "abcdefg", thread = Nothing, changed = False } ]
+                        (Marks.split [ { start = 50, end = 60, thread = "t1" } ] [] 10 "abcdefg")
                     )
             , U.test "two ranges in one run" <| \_ ->
                 expect
                     (Expect.equal
-                        [ { text = "a", thread = Nothing }
-                        , { text = "b", thread = Just "t1" }
-                        , { text = "cd", thread = Nothing }
-                        , { text = "ef", thread = Just "t2" }
-                        , { text = "g", thread = Nothing }
+                        [ { text = "a", thread = Nothing, changed = False }
+                        , { text = "b", thread = Just "t1", changed = False }
+                        , { text = "cd", thread = Nothing, changed = False }
+                        , { text = "ef", thread = Just "t2", changed = False }
+                        , { text = "g", thread = Nothing, changed = False }
                         ]
-                        (Marks.split [ { start = 1, end = 2, thread = "t1" }, { start = 4, end = 6, thread = "t2" } ] 0 "abcdefg")
+                        (Marks.split [ { start = 1, end = 2, thread = "t1" }, { start = 4, end = 6, thread = "t2" } ] [] 0 "abcdefg")
                     )
             , U.test "a range that ends exactly where the run begins touches nothing" <| \_ ->
                 expect
                     (Expect.equal
-                        [ { text = "abcdefg", thread = Nothing } ]
-                        (Marks.split [ { start = 5, end = 10, thread = "t1" } ] 10 "abcdefg")
+                        [ { text = "abcdefg", thread = Nothing, changed = False } ]
+                        (Marks.split [ { start = 5, end = 10, thread = "t1" } ] [] 10 "abcdefg")
                     )
             , U.test "an empty run yields no pieces" <| \_ ->
-                expect (Expect.equal [] (Marks.split [ { start = 0, end = 5, thread = "t1" } ] 0 ""))
+                expect (Expect.equal [] (Marks.split [ { start = 0, end = 5, thread = "t1" } ] [] 0 ""))
             , U.test "no ranges at all leaves the run whole" <| \_ ->
                 expect
                     (Expect.equal
-                        [ { text = "abcdefg", thread = Nothing } ]
-                        (Marks.split [] 10 "abcdefg")
+                        [ { text = "abcdefg", thread = Nothing, changed = False } ]
+                        (Marks.split [] [] 10 "abcdefg")
                     )
             , U.test "the pieces of a run always rebuild it" <| \_ ->
                 expect
                     (Expect.equal "abcdefg"
                         (Array.foldl (\piece acc -> acc ++ piece.text)
                             ""
-                            (Marks.split [ { start = 11, end = 14, thread = "t1" } ] 10 "abcdefg")
+                            (Marks.split [ { start = 11, end = 14, thread = "t1" } ] [] 10 "abcdefg")
+                        )
+                    )
+            ]
+        }
+
+
+{-| A comment is about a passage and a change is about a passage, and nothing
+stops them being the same passage, or two that overlap. Every piece answers both
+questions, so the page can show a sentence that was commented on, changed, both
+or neither.
+-}
+twoHighlightsAtOnce : U.Suite
+twoHighlightsAtOnce =
+    U.suite
+        { name = "Marks.split, comments and changes together"
+        , setUpSuite = U.noSuiteFixture
+        , tearDownSuite = U.noTearDown
+        , setUp = U.noFixture
+        , tearDown = U.noTearDown
+        , tests =
+            [ U.test "a change with no comment on it" <| \_ ->
+                expect
+                    (Expect.equal
+                        [ { text = "ab", thread = Nothing, changed = False }
+                        , { text = "cde", thread = Nothing, changed = True }
+                        , { text = "fg", thread = Nothing, changed = False }
+                        ]
+                        (Marks.split [] [ { start = 2, end = 5 } ] 0 "abcdefg")
+                    )
+            , U.test "a passage that was both commented on and changed" <| \_ ->
+                expect
+                    (Expect.equal
+                        [ { text = "ab", thread = Nothing, changed = False }
+                        , { text = "cde", thread = Just "t1", changed = True }
+                        , { text = "fg", thread = Nothing, changed = False }
+                        ]
+                        (Marks.split
+                            [ { start = 2, end = 5, thread = "t1" } ]
+                            [ { start = 2, end = 5 } ]
+                            0
+                            "abcdefg"
+                        )
+                    )
+            , U.test "a change that overlaps the end of a comment" <| \_ ->
+                -- Four pieces out of two passages: the comment alone, the two
+                -- of them together, the change alone, and what neither covers.
+                expect
+                    (Expect.equal
+                        [ { text = "a", thread = Nothing, changed = False }
+                        , { text = "b", thread = Just "t1", changed = False }
+                        , { text = "cd", thread = Just "t1", changed = True }
+                        , { text = "ef", thread = Nothing, changed = True }
+                        , { text = "g", thread = Nothing, changed = False }
+                        ]
+                        (Marks.split
+                            [ { start = 1, end = 4, thread = "t1" } ]
+                            [ { start = 2, end = 6 } ]
+                            0
+                            "abcdefg"
+                        )
+                    )
+            , U.test "a change that began in an earlier run" <| \_ ->
+                expect
+                    (Expect.equal
+                        [ { text = "ab", thread = Nothing, changed = True }
+                        , { text = "cdefg", thread = Nothing, changed = False }
+                        ]
+                        (Marks.split [] [ { start = 4, end = 12 } ] 10 "abcdefg")
+                    )
+            , U.test "the pieces of a run always rebuild it" <| \_ ->
+                expect
+                    (Expect.equal "abcdefg"
+                        (Array.foldl (\piece acc -> acc ++ piece.text)
+                            ""
+                            (Marks.split
+                                [ { start = 11, end = 14, thread = "t1" } ]
+                                [ { start = 12, end = 13 }, { start = 15, end = 20 } ]
+                                10
+                                "abcdefg"
+                            )
                         )
                     )
             ]

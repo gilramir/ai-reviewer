@@ -192,6 +192,28 @@ The palette is written once with CSS `light-dark()`, which makes the whole
 switch a single `color-scheme` property — and asks for a browser from 2024 or
 later (Chrome 123, Firefox 120, Safari 17.5).
 
+## What changed while you were reading
+
+A few turns in, the page is not the page you started with, and the margin only
+says what each turn was asked for. So the words the document did not have when
+the session started are tinted — a wash, no border, quiet enough to read
+straight through, and quite different from the yellow of a commented passage. A
+passage that is both keeps the yellow, because that is the one you can click,
+and says the rest in the colour of the line underneath it.
+
+It compares words rather than lines or bytes, which is what keeps it honest
+about what actually moved. Re-wrapping a paragraph changes nothing, because a
+soft wrap reaches the tree as one space either way. Neither does turning `*this*`
+into `**this**`, which the reader cannot see. What is left is the sentences that
+say something different, marked from the first changed word to the last with the
+spaces between them swallowed, so a rewritten clause is one highlight rather
+than a row of them.
+
+Two things it cannot do. A deletion leaves nothing on the page to point at, so
+it is invisible here — `git log` on the review branch is still where the whole
+truth is. And the baseline is this run's: a restart starts the session over, in
+the same way and for the same reason that the conversations do.
+
 ## Editing it yourself
 
 Not every comment is a question, and some are not even a request: the reviewer
@@ -298,6 +320,7 @@ internal/review/      documents, threads, anchoring, assets, turn lifecycle
 internal/claudeproc/  the long-lived claude process, one per document
                       (protocol write-up: docs/backendClaude.md)
 internal/gitstore/    one commit per turn; snapshots outside a repo
+internal/textdiff/    which words a document gained, for the change highlight
 internal/server/      HTTP, auth, WebSocket
 web/src/              Gren: Doc (decoder), Protocol (wire), Marks (anchoring),
                       Picker (the document list), Main (app)
@@ -331,7 +354,10 @@ inside the view: a module that imports `Html` cannot be compiled for node at
 all. The main module there is `Check` rather than `Main` only because `../src` is
 on the source path and already has one.
 
-The `Marks` suite is the record of every anchoring bug found so far — a quote whose line
+The `Marks` suite covers both of the highlights drawn over the words — the
+passage a comment is anchored to, and the passage that changed since the session
+started — because they overlap freely and every piece of a line has to answer
+for both. It is also the record of every anchoring bug found so far — a quote whose line
 wrap is a newline where the document's is a space, a passage inside `**[link]()**`,
 a highlight that has to cross into a code span — plus the one limit that is not
 fixed: a selection spanning two blocks files its comment but is not highlighted.

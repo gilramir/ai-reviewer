@@ -1,5 +1,6 @@
 module Marks exposing
-    ( Piece
+    ( Change
+    , Piece
     , Range
     , find
     , plainText
@@ -43,11 +44,30 @@ type alias Range =
     }
 
 
-{-| A run of text, and the thread whose passage covers it, if any.
+{-| A passage that is not what it was when the session started.
+
+It carries no thread, because a change is not a conversation -- nobody asked
+about it and there is nothing to go to. It is only the page saying which of its
+words are new to the reader.
+
+-}
+type alias Change =
+    { start : Int
+    , end : Int
+    }
+
+
+{-| A run of text, the thread whose passage covers it, and whether it is one of
+the passages that changed.
+
+The two are independent: a sentence can be commented on, changed, both, or
+neither, and the reader has to be able to tell which.
+
 -}
 type alias Piece =
     { text : String
     , thread : Maybe String
+    , changed : Bool
     }
 
 
@@ -142,18 +162,22 @@ isSpace c =
     c == ' ' || c == '\n' || c == '\t' || c == '\r'
 
 
-{-| Split one run of text around the ranges falling inside it.
+{-| Split one run of text around the passages falling inside it.
 
 `base` is where the run starts in the document text, which is what lets ranges
 in document coordinates be applied to a single node's string. A range wider than
 the run is clipped to it: the rest of it belongs to the nodes either side, and
 they will clip their own share of it when the walk reaches them.
 
+The split is driven by the edges rather than by the passages, because there are
+two kinds of passage here and they overlap freely. Every place where either kind
+starts or stops ends a piece, and each piece then asks both what covers it.
+
 The ranges must be sorted by `start`.
 
 -}
-split : Array Range -> Int -> String -> Array Piece
-split ranges base text =
+split : Array Range -> Array Change -> Int -> String -> Array Piece
+split ranges changes base text =
     let
         stop =
             base + String.count text
@@ -162,31 +186,55 @@ split ranges base text =
         []
 
     else
-        pieces ranges base text stop base []
+        edges ranges changes base stop
+            |> Array.foldl
+                (\edge acc ->
+                    if edge <= acc.at then
+                        -- Two passages ending in the same place, or one
+                        -- starting where another stops: one edge, one piece.
+                        acc
+
+                    else
+                        { at = edge
+                        , pieces =
+                            Array.pushLast
+                                { text = cut base acc.at edge text
+                                , thread = threadAt ranges acc.at
+                                , changed = isChangedAt changes acc.at
+                                }
+                                acc.pieces
+                        }
+                )
+                { at = base, pieces = [] }
+            |> .pieces
 
 
-pieces : Array Range -> Int -> String -> Int -> Int -> Array Piece -> Array Piece
-pieces ranges base text stop at acc =
-    if at >= stop then
-        acc
+{-| Where the pieces of one run divide: every point inside it at which a passage
+of either kind begins or ends, and then its end.
+-}
+edges : Array Range -> Array Change -> Int -> Int -> Array Int
+edges ranges changes base stop =
+    Array.flatten
+        [ Array.mapAndFlatten (\range -> [ range.start, range.end ]) ranges
+        , Array.mapAndFlatten (\change -> [ change.start, change.end ]) changes
+        ]
+        |> Array.keepIf (\at -> at > base && at < stop)
+        |> Array.sort
+        |> Array.pushLast stop
 
-    else
-        when Array.findFirst (\range -> range.end > at && range.start < stop) ranges is
-            Nothing ->
-                Array.pushLast { text = cut base at stop text, thread = Nothing } acc
 
-            Just found ->
-                if found.value.start > at then
-                    pieces ranges base text stop found.value.start <|
-                        Array.pushLast { text = cut base at found.value.start text, thread = Nothing } acc
+{-| The thread whose passage covers a point, if one does. The first of them when
+several do: the ranges are sorted, so that is the one that started earliest.
+-}
+threadAt : Array Range -> Int -> Maybe String
+threadAt ranges at =
+    Array.findFirst (\range -> range.start <= at && at < range.end) ranges
+        |> Maybe.map (\found -> found.value.thread)
 
-                else
-                    let
-                        upTo =
-                            min found.value.end stop
-                    in
-                    pieces ranges base text stop upTo <|
-                        Array.pushLast { text = cut base at upTo text, thread = Just found.value.thread } acc
+
+isChangedAt : Array Change -> Int -> Bool
+isChangedAt changes at =
+    Array.any (\change -> change.start <= at && at < change.end) changes
 
 
 {-| The slice of a run's text between two document offsets.

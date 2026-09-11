@@ -15,6 +15,12 @@
   --accent: light-dark(#7a4b1e, #d3a06a);
   --anchor: light-dark(#fdf0c8, #4a3c14);
   --anchor-edge: light-dark(#e2c261, #7d6524);
+  /* What changed while the reviewer was reading. Quieter than the anchor on
+     purpose: an anchor is a conversation to go to, a change is only the page
+     saying which of its words are new, and a document a few turns in can be
+     half covered in them. */
+  --changed: light-dark(#e8f0e1, #212a1d);
+  --changed-edge: light-dark(#8aa876, #5f7a4e);
   --assistant: light-dark(#f2f4f7, #26252d);
   --danger: light-dark(#a3341f, #e0745c);
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
@@ -422,6 +428,23 @@ mark.anchored {
   padding: 0 1px;
   /* It leads to the thread about it. */
   cursor: pointer;
+}
+
+/* A passage that is not what it was when the session started. A wash and
+   nothing else: no edge, no padding, so it tints the words without moving them
+   or drawing a second line across a paragraph that may already have one. */
+mark.changed {
+  background: var(--changed);
+  color: inherit;
+  border-radius: 0.15em;
+}
+
+/* Both at once. The anchor keeps its colour, because that is the one you can
+   click; the change says so in the line underneath instead, which leaves the
+   passage one mark rather than two fighting over the same words. */
+mark.anchored.changed {
+  background: var(--anchor);
+  box-shadow: 0 1px 0 var(--changed-edge);
 }
 
 /* ----------------------------------------------------------------- threads */

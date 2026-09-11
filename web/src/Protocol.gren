@@ -32,6 +32,7 @@ import Array exposing (Array)
 import Doc exposing (Doc)
 import Json.Decode as Decode exposing (Decoder)
 import Json.Encode as Encode
+import Marks exposing (Change)
 
 
 -- ANCHORS
@@ -131,7 +132,7 @@ type alias Settings =
 
 
 type ServerMsg
-    = DocUpdated Doc
+    = DocUpdated { doc : Doc, changes : Array Change }
     | ThreadsUpdated { doc : String, threads : Array Thread }
     | AssistantDelta { threadId : String, text : String }
     | TurnEnded { threadId : String, edited : Bool, commit : String }
@@ -153,7 +154,10 @@ serverMsgBody : String -> Decoder ServerMsg
 serverMsgBody tag =
     when tag is
         "doc" ->
-            Decode.map DocUpdated (Decode.field "doc" Doc.decoder)
+            Decode.map2
+                (\doc changes -> DocUpdated { doc = doc, changes = changes })
+                (Decode.field "doc" Doc.decoder)
+                changesDecoder
 
         "threads" ->
             Decode.map2
@@ -207,6 +211,25 @@ serverMsgBody tag =
 
         _ ->
             Decode.fail ("unknown server message type: " ++ tag)
+
+
+{-| The passages of this render that the session did not start with. Absent
+when there are none, which is every render of a document nobody has touched.
+-}
+changesDecoder : Decoder (Array Change)
+changesDecoder =
+    Decode.oneOf
+        [ Decode.field "changes" (Decode.array changeDecoder)
+        , Decode.succeed []
+        ]
+
+
+changeDecoder : Decoder Change
+changeDecoder =
+    Decode.map2
+        (\start end -> { start = start, end = end })
+        (Decode.field "start" Decode.int)
+        (Decode.field "end" Decode.int)
 
 
 {-| The Go side omits zero values, so every field here has a default rather than

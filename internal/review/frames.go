@@ -13,6 +13,10 @@ import (
 type docFrame struct {
 	Type string         `json:"type"`
 	Doc  mdast.Document `json:"doc"`
+	// Changes are the passages this render has that the session did not start
+	// with. They travel with the tree because they are only true of this
+	// render of it.
+	Changes []Range `json:"changes,omitempty"`
 }
 
 type threadsFrame struct {
@@ -120,11 +124,11 @@ func (r *Review) publish(frame any) {
 
 // PublishDoc renders a document and pushes it to every connection.
 func (r *Review) PublishDoc(docPath string) error {
-	doc, err := r.Render(docPath)
+	doc, changes, err := r.render(docPath)
 	if err != nil {
 		return err
 	}
-	r.publish(docFrame{Type: "doc", Doc: doc})
+	r.publish(docFrame{Type: "doc", Doc: doc, Changes: changes})
 	return nil
 }
 

@@ -19,7 +19,7 @@ import Html.Events as Events
 import Html.Keyed
 import Json.Decode as Decode
 import Json.Encode as Encode
-import Marks exposing (Range)
+import Marks exposing (Change, Range)
 import Math
 import Picker
 import Protocol exposing (Anchor, Role(..), ServerMsg(..), Thread, ThreadStatus(..))
@@ -85,6 +85,7 @@ type alias Model =
     , busy : Bool
     , composing : Maybe Composing
     , marks : Array Range
+    , changes : Array Change
     , replyDrafts : Dict String String
     , connection : String
     , settings : Maybe Protocol.Settings
@@ -165,6 +166,7 @@ init flags =
         , busy = False
         , composing = Nothing
         , marks = []
+        , changes = []
         , replyDrafts = Dict.empty
         , connection = "connecting"
         , settings = Nothing
@@ -500,7 +502,7 @@ stay model =
 applyServerMsg : ServerMsg -> Model -> { model : Model, command : Cmd Msg }
 applyServerMsg frame model =
     when frame is
-        DocUpdated doc ->
+        DocUpdated payload ->
             -- Renders are broadcast, and the daemon re-renders whatever changed
             -- on disk — a document nobody has open, a whole branch's worth
             -- during a checkout. Only the one that was asked for is drawn;
@@ -511,8 +513,8 @@ applyServerMsg frame model =
             -- the document leaves it perfectly valid and a re-render is no
             -- reason to throw a draft away. When the passage itself has gone,
             -- the composer says so and still keeps the words.
-            if doc.path == model.opened then
-                stay (afterDocChange doc model)
+            if payload.doc.path == model.opened then
+                stay (afterDocChange payload.doc payload.changes model)
 
             else
                 stay model
@@ -706,8 +708,8 @@ is still there. Both answers are kept in the model, so drawing a frame never
 searches the document again.
 
 -}
-afterDocChange : Doc -> Model -> Model
-afterDocChange doc model =
+afterDocChange : Doc -> Array Change -> Model -> Model
+afterDocChange doc changes model =
     let
         plain =
             Marks.plainText (Doc.text doc.root)
@@ -715,6 +717,7 @@ afterDocChange doc model =
     { model
         | current = Just doc
         , marks = marksIn plain model.threads
+        , changes = changes
         , composing =
             Maybe.map
                 (\composing ->
@@ -1679,7 +1682,7 @@ viewDocument model =
         [ Attr.class "doc", Attr.id "doc-pane" ]
         [ when model.current is
             Just doc ->
-                .html (viewNode model.marks 0 doc.root)
+                .html (viewNode (marking model) 0 doc.root)
 
             Nothing ->
                 Html.p [ Attr.class "empty" ] [ Html.text "Select a document." ]
@@ -1695,29 +1698,44 @@ viewDocument model =
 -- into the next one.
 
 
+{-| The two things drawn over the words: the passages comments are anchored to,
+and the passages that have changed since the session started. They travel
+together because every leaf has to ask both.
+-}
+type alias Marking =
+    { marks : Array Range
+    , changes : Array Change
+    }
+
+
+marking : Model -> Marking
+marking model =
+    { marks = model.marks, changes = model.changes }
+
+
 {-| Render a node, and report where the walk has reached.
 -}
-viewNode : Array Range -> Int -> Node -> { html : Html Msg, next : Int }
-viewNode marks offset node =
+viewNode : Marking -> Int -> Node -> { html : Html Msg, next : Int }
+viewNode over offset node =
     let
         own =
-            markUp marks offset (ownText node)
+            markUp over offset (ownText node)
 
         kids =
-            viewChildren marks own.next node
+            viewChildren over own.next node
     in
     { html = element node own.html kids.html
     , next = kids.next
     }
 
 
-viewChildren : Array Range -> Int -> Node -> { html : Array (Html Msg), next : Int }
-viewChildren marks offset node =
+viewChildren : Marking -> Int -> Node -> { html : Array (Html Msg), next : Int }
+viewChildren over offset node =
     Array.foldl
         (\child acc ->
             let
                 walked =
-                    viewNode marks acc.next child
+                    viewNode over acc.next child
             in
             { html = Array.pushLast walked.html acc.html, next = walked.next }
         )
@@ -1963,29 +1981,50 @@ alignStyle align =
             Attr.style "" ""
 
 
-{-| Render one leaf's text, marked where a commented passage covers it, and
-report where the walk has reached.
+{-| Render one leaf's text, marked where a commented or changed passage covers
+it, and report where the walk has reached.
 -}
-markUp : Array Range -> Int -> String -> { html : Array (Html Msg), next : Int }
-markUp marks base text =
-    { html = Array.map viewPiece (Marks.split marks base text)
+markUp : Marking -> Int -> String -> { html : Array (Html Msg), next : Int }
+markUp over base text =
+    { html = Array.map viewPiece (Marks.split over.marks over.changes base text)
     , next = base + String.count text
     }
 
 
+{-| One piece of a leaf's text, under whichever of the two highlights cover it.
+
+A commented passage stays the one that can be clicked, and keeps its colour when
+it has also changed: the change is shown under it as a line instead, so a
+sentence that is both does not have to choose which it is.
+
+-}
 viewPiece : Marks.Piece -> Html Msg
 viewPiece piece =
     when piece.thread is
         Just threadId ->
             Html.node "mark"
-                [ Attr.class "anchored"
+                [ Attr.class
+                    (if piece.changed then
+                        "anchored changed"
+
+                     else
+                        "anchored"
+                    )
                 , Attr.title "Go to this thread"
                 , Events.onClick (FocusThread threadId)
                 ]
                 [ Html.text piece.text ]
 
         Nothing ->
-            Html.text piece.text
+            if piece.changed then
+                Html.node "mark"
+                    [ Attr.class "changed"
+                    , Attr.title "Changed since this session began"
+                    ]
+                    [ Html.text piece.text ]
+
+            else
+                Html.text piece.text
 
 
 {-| Where each unresolved thread's quote sits in the document's text, and which

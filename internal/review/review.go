@@ -67,6 +67,7 @@ type Review struct {
 
 	mu       sync.Mutex
 	revs     map[string]int      // document path -> render revision
+	baseline map[string][]string // document path -> its words when the session started
 	turns    map[string]int      // document path -> turns in its conversation
 	spend    map[string]float64  // document path -> what those turns cost
 	assets   map[string][]string // document path -> files its last render embeds
@@ -132,6 +133,7 @@ func New(opts Options) (*Review, error) {
 			},
 		),
 		revs:     map[string]int{},
+		baseline: map[string][]string{},
 		turns:    map[string]int{},
 		spend:    map[string]float64{},
 		assets:   map[string][]string{},
@@ -254,9 +256,18 @@ func isMarkdown(name string) bool {
 
 // Render parses a document and returns the tree the browser draws.
 func (r *Review) Render(docPath string) (mdast.Document, error) {
+	doc, _, err := r.render(docPath)
+	return doc, err
+}
+
+// render parses a document and reports both the tree the browser draws and the
+// passages of it that have changed since the session started. The two come out
+// of one parse because they are two readings of the same tree, and a second
+// parse to answer the second question would be a second opinion about it.
+func (r *Review) render(docPath string) (mdast.Document, []Range, error) {
 	src, err := r.read(docPath)
 	if err != nil {
-		return mdast.Document{}, err
+		return mdast.Document{}, nil, err
 	}
 
 	r.mu.Lock()
@@ -265,12 +276,13 @@ func (r *Review) Render(docPath string) (mdast.Document, error) {
 	r.mu.Unlock()
 
 	doc := mdast.Render(docPath, rev, src)
+	changes := r.changesIn(docPath, doc.Root)
 
 	// The images are pointed at the file route and stamped with what is on disk
 	// right now, which is also how a document learns which files it depends on.
 	r.noteAssets(docPath, r.linkAssets(docPath, &doc.Root))
 
-	return doc, nil
+	return doc, changes, nil
 }
 
 func (r *Review) read(docPath string) ([]byte, error) {
