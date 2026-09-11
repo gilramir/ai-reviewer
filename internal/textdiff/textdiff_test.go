@@ -181,3 +181,26 @@ func TestAWholesaleRewriteIsAllNew(t *testing.T) {
 		}
 	}
 }
+
+// Two words changed at opposite ends of a long document are two edits, however
+// much text sits between them. Bounding the search by that distance instead of
+// by the edit count reported everything between the two as new, which on screen
+// was most of a README highlighted because a word near the top had been
+// rewritten an hour earlier.
+func TestDistantEditsDoNotMarkWhatIsBetweenThem(t *testing.T) {
+	before := make([]string, 1500)
+	for i := range before {
+		before[i] = "word" + strconv.Itoa(i)
+	}
+	after := append([]string(nil), before...)
+	after[10] = "near-the-top"
+	after[len(after)-10] = "near-the-bottom"
+
+	changed := Changed(before, after)
+	for i, c := range changed {
+		want := i == 10 || i == len(after)-10
+		if c != want {
+			t.Fatalf("word %d (%q): marked %v, want %v", i, after[i], c, want)
+		}
+	}
+}

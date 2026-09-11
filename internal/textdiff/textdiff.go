@@ -6,9 +6,12 @@
 // page to point at.
 package textdiff
 
-// maxEdits bounds the search. Reaching it takes a document rewritten from end
-// to end, where the honest answer is that all of it is new, and that is what
-// the caller gets.
+// maxEdits bounds the search by the length of the edit script, not by the
+// length of the text: a word changed at the top of a document and another at
+// the bottom are two edits however many paragraphs sit between them, and
+// bounding the span instead reported all of those paragraphs as new. Reaching
+// this many edits takes a document rewritten from end to end, where the honest
+// answer is that all of it is new, and that is what the caller gets.
 const maxEdits = 2000
 
 // Changed reports, for each item of after, whether it arrived with the change.
@@ -64,15 +67,15 @@ func markAll(changed []bool, from, to int) {
 func myers(a, b []string) ([]bool, bool) {
 	n, m := len(a), len(b)
 	limit := n + m
-	if limit > maxEdits {
-		return nil, false
-	}
 
 	offset := limit
 	frontier := make([]int32, 2*limit+1)
 	trace := make([][]int32, 0, limit+1)
 
 	for d := 0; d <= limit; d++ {
+		if d > maxEdits {
+			return nil, false
+		}
 		for k := -d; k <= d; k += 2 {
 			var x int
 			if k == -d || (k != d && frontier[offset+k-1] < frontier[offset+k+1]) {
