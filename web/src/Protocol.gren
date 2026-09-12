@@ -3,6 +3,8 @@ module Protocol exposing
     , Conversation
     , Landing
     , Message
+    , Origin(..)
+    , Pass
     , Role(..)
     , ServerMsg(..)
     , Settings
@@ -16,6 +18,7 @@ module Protocol exposing
     , openDoc
     , reply
     , resolve
+    , review
     , serverMsgDecoder
     , setModel
     )
@@ -69,9 +72,31 @@ type alias Thread =
     , status : ThreadStatus
     , messages : Array Message
     , commit : String
+    , origin : Origin
+    , brief : String
     }
 
 
+{-| Who opened a thread.
+
+A field rather than a reading of who wrote the first message: the two answers
+diverge the moment anything is appended, and the sidebar asks this question of
+threads that are several turns old.
+
+-}
+type Origin
+    = Reviewer
+    | Model
+
+
+{-| Where a thread sits in its lifecycle.
+
+Four, and a machine review adds none. A comment raised by a pass is `Open` like
+any other -- open means somebody owes something, and which somebody is a reading
+of who spoke last rather than a fifth state to teach this decoder, `reanchor`
+and every view that switches on one.
+
+-}
 type ThreadStatus
     = Open
     | Thinking
@@ -143,6 +168,26 @@ type alias Settings =
     , cliPath : String
     , cliVersion : String
     , conversations : Array Conversation
+    , criticTools : Array String
+    , brief : String
+    }
+
+
+{-| How far a reviewing pass has got through a document.
+
+`active` going false is the pass being over, and takes the notice off the
+screen. It is separate from `busy` because "thinking" and "on section 3 of 9"
+are different things to be told: one is a spinner, the other is a reason to
+wait.
+
+-}
+type alias Pass =
+    { doc : String
+    , active : Bool
+    , section : Int
+    , total : Int
+    , title : String
+    , brief : String
     }
 
 
@@ -152,6 +197,7 @@ type ServerMsg
     | AssistantDelta { threadId : String, text : String }
     | TurnEnded { threadId : String, edited : Bool, commit : String }
     | BusyChanged { doc : String, busy : Bool }
+    | PassProgress Pass
     | DocList (Array String)
     | SettingsUpdated Settings
     | EditSource { doc : String, quote : String, text : String }
@@ -201,6 +247,9 @@ serverMsgBody tag =
                 (Decode.field "doc" Decode.string)
                 (Decode.field "busy" Decode.bool)
 
+        "pass" ->
+            Decode.map PassProgress passDecoder
+
         "docList" ->
             Decode.map DocList (Decode.field "docs" (Decode.array Decode.string))
 
@@ -226,6 +275,26 @@ serverMsgBody tag =
 
         _ ->
             Decode.fail ("unknown server message type: " ++ tag)
+
+
+passDecoder : Decoder Pass
+passDecoder =
+    Decode.map6
+        (\doc active section total title brief ->
+            { doc = doc
+            , active = active
+            , section = section
+            , total = total
+            , title = title
+            , brief = brief
+            }
+        )
+        (Decode.field "doc" Decode.string)
+        (Decode.oneOf [ Decode.field "active" Decode.bool, Decode.succeed False ])
+        (optionalInt "section")
+        (optionalInt "total")
+        (optionalString "title")
+        (optionalString "brief")
 
 
 {-| The passages of this render that the session did not start with. Absent
@@ -270,7 +339,9 @@ settingsDecoder =
             , live = spend.live
             , cliPath = spend.cliPath
             , cliVersion = spend.cliVersion
-            , conversations = conversations
+            , conversations = conversations.conversations
+            , criticTools = conversations.criticTools
+            , brief = conversations.brief
             }
         )
         modelsDecoder
@@ -396,12 +467,29 @@ optionalInt field =
     Decode.oneOf [ Decode.field field Decode.int, Decode.succeed 0 ]
 
 
-conversationsDecoder : Decoder (Array Conversation)
+{-| The conversations, and what a reviewing pass runs with: the brief it takes
+when nobody says, and the tools it is allowed -- which is the shorter list, and
+is shown because "it cannot edit the document" is the claim the whole feature
+rests on.
+-}
+conversationsDecoder :
+    Decoder
+        { conversations : Array Conversation
+        , criticTools : Array String
+        , brief : String
+        }
 conversationsDecoder =
-    Decode.oneOf
-        [ Decode.field "conversations" (Decode.array conversationDecoder)
-        , Decode.succeed []
-        ]
+    Decode.map3
+        (\conversations tools brief ->
+            { conversations = conversations, criticTools = tools, brief = brief }
+        )
+        (Decode.oneOf
+            [ Decode.field "conversations" (Decode.array conversationDecoder)
+            , Decode.succeed []
+            ]
+        )
+        (optionalStrings "criticTools")
+        (optionalString "brief")
 
 
 conversationDecoder : Decoder Conversation
@@ -415,14 +503,16 @@ conversationDecoder =
 
 threadDecoder : Decoder Thread
 threadDecoder =
-    Decode.map6
-        (\threadId doc anchor status messages commit ->
+    Decode.map7
+        (\threadId doc anchor status messages commit raised ->
             { id = threadId
             , doc = doc
             , anchor = anchor
             , status = status
             , messages = messages
             , commit = commit
+            , origin = raised.origin
+            , brief = raised.brief
             }
         )
         (Decode.field "id" Decode.string)
@@ -431,6 +521,28 @@ threadDecoder =
         (Decode.field "status" (Decode.map statusFromTag Decode.string))
         (Decode.field "messages" (Decode.array messageDecoder))
         (Decode.oneOf [ Decode.field "commit" Decode.string, Decode.succeed "" ])
+        raisedDecoder
+
+
+{-| Who raised the thread and what they were looking for. Both absent on a
+thread filed before machine review existed, which makes it a reviewer's.
+-}
+raisedDecoder : Decoder { origin : Origin, brief : String }
+raisedDecoder =
+    Decode.map2
+        (\origin brief -> { origin = origin, brief = brief })
+        (Decode.map originFromTag (optionalString "origin"))
+        (optionalString "brief")
+
+
+originFromTag : String -> Origin
+originFromTag tag =
+    when tag is
+        "model" ->
+            Model
+
+        _ ->
+            Reviewer
 
 
 anchorDecoder : Decoder Anchor
@@ -547,6 +659,20 @@ resolve threadId =
 interrupt : String -> Encode.Value
 interrupt doc =
     tagged "interrupt" [ { key = "doc", value = Encode.string doc } ]
+
+
+{-| Ask for the document to be read and commented on.
+
+An empty brief takes the standing one from `.ai-reviewer/review.md`, which is
+the usual case: the brief is a setting rather than something typed each time.
+
+-}
+review : { doc : String, brief : String } -> Encode.Value
+review args =
+    tagged "review"
+        [ { key = "doc", value = Encode.string args.doc }
+        , { key = "brief", value = Encode.string args.brief }
+        ]
 
 
 {-| Throw away what the model remembers, on every document. The threads are the

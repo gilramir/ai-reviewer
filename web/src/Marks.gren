@@ -1,5 +1,6 @@
 module Marks exposing
     ( Change
+    , Needle
     , Piece
     , Range
     , find
@@ -27,6 +28,25 @@ them.
 -}
 
 import Array exposing (Array)
+import Char
+
+
+{-| A passage to look for, and the characters recorded either side of it.
+
+The context is not decoration. A phrase that occurs twice has two places it
+could be, and the server chooses between them by how much of the surrounding
+text each still has -- so if the client chooses by "the first one", the two
+disagree and the highlight lands on a sentence the thread is not about. That
+never showed while only a human filed comments, because a selection is long
+enough to be unique; a comment raised by a reviewing pass quotes whatever it is
+talking about, and "the reviewer" is not unique in a document about reviewing.
+
+-}
+type alias Needle =
+    { quote : String
+    , prefix : String
+    , suffix : String
+    }
 
 
 {-| A commented passage on the page: a half-open range of the document's text,
@@ -78,38 +98,140 @@ plainText text =
     String.toArray text
 
 
-{-| The first place a quote occurs, or nothing when the passage is gone.
+{-| Where a passage sits in the document, or nothing when it is gone.
 
-One place per quote: the reviewer selected one passage, so a phrase that
-repeats is marked where it first appears rather than everywhere it does. Which
-thread it belongs to is the caller's business, not this search's.
+One place per needle: a comment is about one passage, so a phrase that repeats
+is marked in one of the places it occurs and not in all of them. Which one is
+decided by the context, on the same evidence and by the same arithmetic the
+server uses -- the two halves have to agree, and agreeing by accident stopped
+working the moment comments started quoting short phrases.
+
+Which thread a passage belongs to is the caller's business, not this search's.
 
 -}
-find : Array Char -> String -> Maybe { start : Int, end : Int }
-find document quote =
+find : Array Char -> Needle -> Maybe { start : Int, end : Int }
+find document needle =
     let
-        needle =
-            String.toArray (String.trim quote)
+        quote =
+            String.toArray (String.trim needle.quote)
     in
-    if Array.isEmpty needle then
+    if Array.isEmpty quote then
         Nothing
 
     else
-        searchFrom document needle 0
+        Array.foldl (better document needle) Nothing (searchAll document quote 0 [])
 
 
-searchFrom : Array Char -> Array Char -> Int -> Maybe { start : Int, end : Int }
-searchFrom document needle at =
+{-| Every place the quote occurs. Overlapping matches of one passage are never
+two answers, so the walk resumes past each hit rather than one character on.
+-}
+searchAll :
+    Array Char
+    -> Array Char
+    -> Int
+    -> Array { start : Int, end : Int }
+    -> Array { start : Int, end : Int }
+searchAll document needle at found =
     if at >= Array.length document then
-        Nothing
+        found
 
     else
         when matchAt document needle at 0 is
             Just end ->
-                Just { start = at, end = end }
+                searchAll document needle end (Array.pushLast { start = at, end = end } found)
 
             Nothing ->
-                searchFrom document needle (at + 1)
+                searchAll document needle (at + 1) found
+
+
+{-| Keep whichever candidate has more of the recorded context around it, and the
+earlier one when they are level -- which is every case where the needle carries
+no context at all.
+-}
+better :
+    Array Char
+    -> Needle
+    -> { start : Int, end : Int }
+    -> Maybe { start : Int, end : Int }
+    -> Maybe { start : Int, end : Int }
+better document needle candidate best =
+    when best is
+        Nothing ->
+            Just candidate
+
+        Just current ->
+            if score document needle candidate > score document needle current then
+                Just candidate
+
+            else
+                best
+
+
+{-| How much of the recorded prefix and suffix a candidate still has around it.
+
+Letters and digits only, lowercased, so a difference in how whitespace fell or
+in what punctuation survived an edit does not count against a match. The window
+is wider than the context it is compared with for that same reason: stripping
+turns a long stretch of source into a short one.
+
+-}
+score : Array Char -> Needle -> { start : Int, end : Int } -> Int
+score document needle at =
+    let
+        before =
+            normalise (slice (at.start - window needle.prefix) at.start document)
+
+        after =
+            normalise (slice at.end (at.end + window needle.suffix) document)
+    in
+    commonSuffix before (normalise (String.toArray needle.prefix))
+        + commonPrefix after (normalise (String.toArray needle.suffix))
+
+
+window : String -> Int
+window context =
+    4 * String.count context + 16
+
+
+slice : Int -> Int -> Array Char -> Array Char
+slice from to chars =
+    Array.slice (max 0 from) (min (Array.length chars) to) chars
+
+
+normalise : Array Char -> Array Char
+normalise chars =
+    -- Case is folded through String because Gren's Char has no toLower: the
+    -- answer depends on the locale rules a String carries and a code point on
+    -- its own does not.
+    chars
+        |> String.fromArray
+        |> String.toLower
+        |> String.toArray
+        |> Array.keepIf Char.isAlphaNum
+
+
+commonPrefix : Array Char -> Array Char -> Int
+commonPrefix a b =
+    countMatching a b 0
+
+
+commonSuffix : Array Char -> Array Char -> Int
+commonSuffix a b =
+    countMatching (Array.reverse a) (Array.reverse b) 0
+
+
+countMatching : Array Char -> Array Char -> Int -> Int
+countMatching a b n =
+    when { left = Array.get n a, right = Array.get n b } is
+        { left = Just x, right = Just y } ->
+            if x == y then
+                countMatching a b (n + 1)
+
+            else
+                n
+
+        _ ->
+            n
 
 
 {-| Match the needle at one position, folding whitespace on both sides.
@@ -223,13 +345,40 @@ edges ranges changes base stop =
         |> Array.pushLast stop
 
 
-{-| The thread whose passage covers a point, if one does. The first of them when
-several do: the ranges are sorted, so that is the one that started earliest.
+{-| The thread whose passage covers a point, if one does.
+
+The narrowest of them when several do. Passages overlap: a comment on a sentence
+and a comment on a clause inside it are two threads, and one character belongs
+to both. Only one of them can colour it, and the narrower one is the more
+specific thing to have said -- so the inner comment wins its own words and the
+outer one keeps the rest. The outer highlight is then drawn with a hole in it,
+which is the honest picture and the reason this is not a sort.
+
+Taking the first instead was survivable while only a reviewer filed comments,
+because two selections rarely overlap. A pass over a section produces overlapping
+quotes as a matter of course.
+
 -}
 threadAt : Array Range -> Int -> Maybe String
 threadAt ranges at =
-    Array.findFirst (\range -> range.start <= at && at < range.end) ranges
-        |> Maybe.map (\found -> found.value.thread)
+    ranges
+        |> Array.keepIf (\range -> range.start <= at && at < range.end)
+        |> Array.foldl narrower Nothing
+        |> Maybe.map .thread
+
+
+narrower : Range -> Maybe Range -> Maybe Range
+narrower range best =
+    when best is
+        Nothing ->
+            Just range
+
+        Just current ->
+            if range.end - range.start < current.end - current.start then
+                Just range
+
+            else
+                best
 
 
 isChangedAt : Array Change -> Int -> Bool

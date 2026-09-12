@@ -55,12 +55,22 @@ expect =
     Task.succeed
 
 
+{-| A passage with no context recorded either side of it, which is every case
+where only one occurrence is in question.
+-}
+bare : String -> Marks.Needle
+bare quote =
+    { quote = quote, prefix = "", suffix = "" }
+
+
 suites : Array U.Suite
 suites =
     [ findingAPassage
     , passagesThatAreNotThere
+    , choosingBetweenOccurrences
     , splittingARun
     , twoHighlightsAtOnce
+    , overlappingComments
     ]
 
 
@@ -83,13 +93,13 @@ findingAPassage =
                 expect
                     (Expect.equal
                         (Just "The three doors out of a Gren program and which one is yours,")
-                        (covers (Marks.find plain "The three doors out of a\nGren program and which one is yours,"))
+                        (covers (Marks.find plain (bare "The three doors out of a\nGren program and which one is yours,")))
                     )
             , U.test "a quote inside link and bold markup is found" <| \_ ->
                 expect
                     (Expect.equal
                         (Just "Turbo Vision, from Gren")
-                        (covers (Marks.find plain "Turbo Vision, from Gren"))
+                        (covers (Marks.find plain (bare "Turbo Vision, from Gren")))
                     )
             , U.test "a quote across a code span is found" <| \_ ->
                 -- The reader selects CLIPBOARD without its backticks, which
@@ -97,7 +107,7 @@ findingAPassage =
                 expect
                     (Expect.equal
                         (Just "never the CLIPBOARD selection")
-                        (covers (Marks.find plain "never the CLIPBOARD selection"))
+                        (covers (Marks.find plain (bare "never the CLIPBOARD selection")))
                     )
             , U.test "a near miss does not win over the real occurrence" <| \_ ->
                 -- "Turbo Vision" appears three sentences earlier; the match
@@ -105,26 +115,26 @@ findingAPassage =
                 expect
                     (Expect.equal
                         (Just 130)
-                        (Maybe.map .start (Marks.find plain "Turbo Vision, from Gren"))
+                        (Maybe.map .start (Marks.find plain (bare "Turbo Vision, from Gren")))
                     )
             , U.test "the range ends where the passage ends" <| \_ ->
                 expect
                     (Expect.equal
                         (Just 153)
-                        (Maybe.map .end (Marks.find plain "Turbo Vision, from Gren"))
+                        (Maybe.map .end (Marks.find plain (bare "Turbo Vision, from Gren")))
                     )
             , U.test "leading and trailing whitespace in a quote is ignored" <| \_ ->
                 expect
                     (Expect.equal
                         (Just "Turbo Vision, from Gren")
-                        (covers (Marks.find plain "\n  Turbo Vision, from Gren \n"))
+                        (covers (Marks.find plain (bare "\n  Turbo Vision, from Gren \n")))
                     )
             , U.test "a run of whitespace matches a run of any other whitespace" <| \_ ->
                 expect
                     (Expect.equal
                         (Just "one two")
                         (Maybe.map (\r -> String.slice r.start r.end "one two three")
-                            (Marks.find (Marks.plainText "one two three") "one \n\t two")
+                            (Marks.find (Marks.plainText "one two three") (bare "one \n\t two"))
                         )
                     )
             ]
@@ -141,16 +151,16 @@ passagesThatAreNotThere =
         , tearDown = U.noTearDown
         , tests =
             [ U.test "a passage that was edited away" <| \_ ->
-                expect (Expect.equal Nothing (Marks.find plain "a sentence that is no longer in the document"))
+                expect (Expect.equal Nothing (Marks.find plain (bare "a sentence that is no longer in the document")))
             , U.test "a blank quote is not a passage" <| \_ ->
-                expect (Expect.equal Nothing (Marks.find plain "   "))
+                expect (Expect.equal Nothing (Marks.find plain (bare "   ")))
             , U.test "an empty quote is not a passage" <| \_ ->
-                expect (Expect.equal Nothing (Marks.find plain ""))
+                expect (Expect.equal Nothing (Marks.find plain (bare "")))
             , U.test "folding never invents whitespace that the document lacks" <| \_ ->
                 -- The document runs the heading straight into the paragraph.
-                expect (Expect.equal Nothing (Marks.find plain "documentation Turbo Vision terminal"))
+                expect (Expect.equal Nothing (Marks.find plain (bare "documentation Turbo Vision terminal")))
             , U.test "folding never joins two words" <| \_ ->
-                expect (Expect.equal Nothing (Marks.find (Marks.plainText "one two three") "onetwo"))
+                expect (Expect.equal Nothing (Marks.find (Marks.plainText "one two three") (bare "onetwo")))
             , U.test "a selection spanning two blocks is not marked" <| \_ ->
                 -- A known limit, written down rather than left to be
                 -- rediscovered. Blocks are concatenated with nothing between
@@ -158,7 +168,96 @@ passagesThatAreNotThere =
                 -- break the document text has no room for. The comment still
                 -- files -- the server searches the source, where the break is
                 -- real -- but the passage is not highlighted on the page.
-                expect (Expect.equal Nothing (Marks.find plain "documentation\nTurbo Vision terminal"))
+                expect (Expect.equal Nothing (Marks.find plain (bare "documentation\nTurbo Vision terminal")))
+            ]
+        }
+
+
+{-| A phrase that occurs twice is two candidates, and the context recorded
+either side of the passage is what decides between them.
+
+This is the half of anchoring the client used to skip, taking the first match
+and ignoring the prefix and suffix it was handed. A reviewer's own selection
+hides the omission, because a selection long enough to be worth commenting on is
+almost always unique. A comment raised by a reviewing pass quotes the words it is
+about, and those repeat.
+
+-}
+choosingBetweenOccurrences : U.Suite
+choosingBetweenOccurrences =
+    let
+        twice : Array Char
+        twice =
+            Marks.plainText "One: the daemon waits. Two: the daemon waits."
+    in
+    U.suite
+        { name = "Marks.find, when the passage occurs more than once"
+        , setUpSuite = U.noSuiteFixture
+        , tearDownSuite = U.noTearDown
+        , setUp = U.noFixture
+        , tearDown = U.noTearDown
+        , tests =
+            [ U.test "the prefix picks the later occurrence" <| \_ ->
+                expect
+                    (Expect.equal
+                        (Just 28)
+                        (Maybe.map .start
+                            (Marks.find twice
+                                { quote = "the daemon waits."
+                                , prefix = "Two: "
+                                , suffix = ""
+                                }
+                            )
+                        )
+                    )
+            , U.test "the prefix picks the earlier occurrence" <| \_ ->
+                expect
+                    (Expect.equal
+                        (Just 5)
+                        (Maybe.map .start
+                            (Marks.find twice
+                                { quote = "the daemon waits."
+                                , prefix = "One: "
+                                , suffix = ""
+                                }
+                            )
+                        )
+                    )
+            , U.test "the suffix decides when the prefix cannot" <| \_ ->
+                -- Both occurrences have "the " in front of them, so only what
+                -- follows can tell them apart. The later one is chosen, which
+                -- is the answer taking the first would never give.
+                expect
+                    (Expect.equal
+                        (Just 27)
+                        (Maybe.map .start
+                            (Marks.find (Marks.plainText "the daemon waits. Then the daemon waits. End.")
+                                { quote = "daemon waits."
+                                , prefix = ""
+                                , suffix = " End."
+                                }
+                            )
+                        )
+                    )
+            , U.test "with no context recorded, the first occurrence still wins" <| \_ ->
+                expect
+                    (Expect.equal
+                        (Just 5)
+                        (Maybe.map .start (Marks.find twice (bare "the daemon waits.")))
+                    )
+            , U.test "context that matches nothing does not lose the passage" <| \_ ->
+                expect
+                    (Expect.equal
+                        (Just 5)
+                        (Maybe.map .start
+                            (Marks.find twice
+                                { quote = "the daemon waits."
+                                , prefix = "nothing like this"
+                                , suffix = "nor this"
+                                }
+                            )
+                        )
+                    )
             ]
         }
 
@@ -245,6 +344,59 @@ splittingARun =
                         (Array.foldl (\piece acc -> acc ++ piece.text)
                             ""
                             (Marks.split [ { start = 11, end = 14, thread = "t1" } ] [] 10 "abcdefg")
+                        )
+                    )
+            ]
+        }
+
+
+{-| Two comments can be about passages that overlap: one on a sentence and one
+on a clause inside it. A character belongs to both and only one of them can
+colour it.
+-}
+overlappingComments : U.Suite
+overlappingComments =
+    U.suite
+        { name = "Marks.split, overlapping comments"
+        , setUpSuite = U.noSuiteFixture
+        , tearDownSuite = U.noTearDown
+        , setUp = U.noFixture
+        , tearDown = U.noTearDown
+        , tests =
+            [ U.test "the narrower comment keeps its own words" <| \_ ->
+                -- The inner comment is the more specific thing to have said,
+                -- so it wins the characters it covers and the outer one keeps
+                -- the rest. Taking the first would have lost the inner one
+                -- entirely.
+                expect
+                    (Expect.equal
+                        [ { text = "ab", thread = Just "outer", changed = False }
+                        , { text = "cd", thread = Just "inner", changed = False }
+                        , { text = "ef", thread = Just "outer", changed = False }
+                        , { text = "g", thread = Nothing, changed = False }
+                        ]
+                        (Marks.split
+                            [ { start = 0, end = 6, thread = "outer" }
+                            , { start = 2, end = 4, thread = "inner" }
+                            ]
+                            []
+                            0
+                            "abcdefg"
+                        )
+                    )
+            , U.test "a later comment does not hide an earlier one of the same width" <| \_ ->
+                expect
+                    (Expect.equal
+                        [ { text = "ab", thread = Just "first", changed = False }
+                        , { text = "cdefg", thread = Nothing, changed = False }
+                        ]
+                        (Marks.split
+                            [ { start = 0, end = 2, thread = "first" }
+                            , { start = 0, end = 2, thread = "second" }
+                            ]
+                            []
+                            0
+                            "abcdefg"
                         )
                     )
             ]

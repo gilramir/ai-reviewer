@@ -22,7 +22,7 @@ import Json.Encode as Encode
 import Marks exposing (Change, Range)
 import Math
 import Picker
-import Protocol exposing (Anchor, Role(..), ServerMsg(..), Thread, ThreadStatus(..))
+import Protocol exposing (Anchor, Origin(..), Role(..), ServerMsg(..), Thread, ThreadStatus(..))
 import Svg
 import Svg.Attributes as SvgAttr
 import Task
@@ -103,6 +103,8 @@ type alias Model =
     , connection : String
     , settings : Maybe Protocol.Settings
     , settingsOpen : Bool
+    , pass : Maybe Protocol.Pass
+    , briefing : Maybe String
     , error : Maybe String
     }
 
@@ -187,6 +189,8 @@ init flags =
         , connection = "connecting"
         , settings = Nothing
         , settingsOpen = False
+        , pass = Nothing
+        , briefing = Nothing
         , error = Nothing
         }
     , command = Cmd.none
@@ -220,6 +224,11 @@ type Msg
     | SubmitReply String
     | ResolveThread String
     | InterruptTurn
+    | StartReview
+    | OpenBriefing
+    | BriefChanged String
+    | SubmitBriefing
+    | CancelBriefing
     | ToggleSettings
     | ModelPicked String
     | ClearContext
@@ -502,6 +511,35 @@ update msg model =
                 Nothing ->
                     stay model
 
+        StartReview ->
+            -- No box to fill in. The brief is a setting, and asking for one
+            -- every time is the bare trigger with friction in front of it.
+            askForReview model ""
+
+        OpenBriefing ->
+            -- The one-off override, prefilled with the standing brief so the
+            -- reviewer is editing something rather than facing an empty field.
+            stay
+                { model
+                    | briefing = Just (standingBrief model)
+                    , picking = Nothing
+                    , settingsOpen = False
+                }
+
+        BriefChanged text ->
+            stay { model | briefing = Just text }
+
+        SubmitBriefing ->
+            when model.briefing is
+                Just brief ->
+                    askForReview { model | briefing = Nothing } brief
+
+                Nothing ->
+                    stay model
+
+        CancelBriefing ->
+            stay { model | briefing = Nothing }
+
         ToggleSettings ->
             stay { model | settingsOpen = not model.settingsOpen, picking = Nothing }
 
@@ -562,10 +600,14 @@ applyServerMsg frame model =
                 stay model
 
         ThreadsUpdated payload ->
+            let
+                found =
+                    marksIn (plainTextOf model.current) payload.threads
+            in
             { model =
                 { model
-                    | threads = payload.threads
-                    , marks = marksIn (plainTextOf model.current) payload.threads
+                    | threads = inDocumentOrder found payload.threads
+                    , marks = found
                     , composing = closeIfFiled payload.threads model.composing
                 }
             , command =
@@ -598,6 +640,17 @@ applyServerMsg frame model =
 
         BusyChanged payload ->
             stay { model | busy = payload.busy }
+
+        PassProgress progress ->
+            stay
+                { model
+                    | pass =
+                        if progress.active && progress.doc == model.opened then
+                            Just progress
+
+                        else
+                            Nothing
+                }
 
         DocList docs ->
             stay { model | docs = docs }
@@ -758,12 +811,13 @@ afterDocChange doc changes model =
     in
     { model
         | current = Just doc
+        , threads = inDocumentOrder (marksIn plain model.threads) model.threads
         , marks = marksIn plain model.threads
         , changes = changes
         , composing =
             Maybe.map
                 (\composing ->
-                    { composing | stale = Marks.find plain composing.anchor.quote == Nothing }
+                    { composing | stale = Marks.find plain (needleFor composing.anchor) == Nothing }
                 )
                 model.composing
     }
@@ -1023,6 +1077,31 @@ anchorDecoder =
         (Decode.field "suffix" Decode.string)
 
 
+askForReview : Model -> String -> { model : Model, command : Cmd Msg }
+askForReview model brief =
+    when model.current is
+        Just doc ->
+            { model = model
+            , command = socketOut (Protocol.review { doc = doc.path, brief = brief })
+            }
+
+        Nothing ->
+            stay model
+
+
+{-| What a pass looks for when nobody says: whatever the daemon read out of
+`.ai-reviewer/review.md`, or the one it ships with.
+-}
+standingBrief : Model -> String
+standingBrief model =
+    when model.settings is
+        Just settings ->
+            settings.brief
+
+        Nothing ->
+            ""
+
+
 -- SUBSCRIPTIONS
 
 
@@ -1050,6 +1129,7 @@ view model =
             , viewSidebar model
             ]
         , viewComposer model.composing
+        , viewBriefing model
         ]
 
 
@@ -1058,21 +1138,149 @@ viewTopBar model =
     Html.header
         [ Attr.class "topbar" ]
         [ viewDocButton model
+        , viewReviewButtons model
         , Html.div
             [ Attr.class "state" ]
-            [ if model.busy then
-                Html.button
-                    [ Attr.class "interrupt", Events.onClick InterruptTurn ]
-                    [ Html.text "thinking — interrupt" ]
-
-              else
-                Html.text ""
+            [ viewWorking model
             , viewSettingsButton model
             , viewConnection model.connection
             ]
         , viewDocPicker model
         , viewSettingsPanel model
         ]
+
+
+{-| Ask the model to read the document and raise its own comments.
+
+Two controls, not one. The first is the trigger and takes no argument: the brief
+is a setting, and a reviewer who had to type one every time would type "review
+this", which is the bare trigger with a form in front of it. The second is the
+one-off, for the pass that is looking for something particular today.
+
+Both are hidden with no document open, because there is nothing to review.
+
+-}
+viewReviewButtons : Model -> Html Msg
+viewReviewButtons model =
+    if model.current == Nothing then
+        Html.text ""
+
+    else
+        Html.div
+            [ Attr.class "review-controls" ]
+            [ Html.button
+                [ Attr.class "review"
+                , Attr.title "Read this document and raise comments on it"
+                , Attr.disabled (model.pass /= Nothing)
+                , Events.onClick StartReview
+                ]
+                [ Html.text "Review" ]
+            , Html.button
+                [ Attr.class "review-brief secondary"
+                , Attr.title "Review it for something in particular"
+                , Attr.disabled (model.pass /= Nothing)
+                , Events.onClick OpenBriefing
+                ]
+                [ Html.text "for…" ]
+            ]
+
+
+{-| What the daemon is doing, and the way to stop it.
+
+A pass says where it has got to, because a run of eight sections is a wait with
+a shape and "thinking" says nothing about how long is left. A turn answering one
+comment has no such shape and does not pretend to.
+
+-}
+viewWorking : Model -> Html Msg
+viewWorking model =
+    when model.pass is
+        Just progress ->
+            Html.button
+                [ Attr.class "interrupt", Events.onClick InterruptTurn ]
+                [ Html.text (passLabel progress ++ " — interrupt") ]
+
+        Nothing ->
+            if model.busy then
+                Html.button
+                    [ Attr.class "interrupt", Events.onClick InterruptTurn ]
+                    [ Html.text "thinking — interrupt" ]
+
+            else
+                Html.text ""
+
+
+passLabel : Protocol.Pass -> String
+passLabel progress =
+    let
+        where_ =
+            "reviewing "
+                ++ String.fromInt progress.section
+                ++ " of "
+                ++ String.fromInt progress.total
+    in
+    if String.isEmpty progress.title then
+        where_
+
+    else
+        where_ ++ " · " ++ progress.title
+
+
+{-| The one-off brief, over the page like the composer.
+
+Prefilled with the standing brief rather than empty: a reviewer does not know
+what to ask for until they have seen what is there, and an empty field invites
+"review this" -- which is a brief that says nothing, and gets a comment on every
+paragraph in return.
+
+-}
+viewBriefing : Model -> Html Msg
+viewBriefing model =
+    when model.briefing is
+        Nothing ->
+            Html.text ""
+
+        Just draft ->
+            Html.div
+                [ Attr.class "briefing" ]
+                [ Html.label [] [ Html.text "Review this document for:" ]
+                , Html.textarea
+                    [ Attr.class "brief"
+                    , Attr.value draft
+                    , Events.onInput BriefChanged
+                    , composerKeys { submit = SubmitBriefing, cancel = Just CancelBriefing }
+                    ]
+                    []
+                , Html.div [ Attr.class "presets" ] (Array.map viewPreset briefPresets)
+                , Html.div
+                    [ Attr.class "actions" ]
+                    [ Html.button [ Events.onClick SubmitBriefing ] [ Html.text "Review" ]
+                    , Html.button
+                        [ Attr.class "secondary", Events.onClick CancelBriefing ]
+                        [ Html.text "Cancel" ]
+                    ]
+                ]
+
+
+{-| A few briefs worth having, which fill the box rather than replace it. They
+are there to say what the thing is good at; the box is still the answer.
+-}
+briefPresets : Array String
+briefPresets =
+    [ "Check the claims. Where the document says something is true, say whether it is, and say what you checked."
+    , "Cut what repeats. Point at passages that say again what an earlier one already said."
+    , "Read it as someone doing what it describes. Say where they would get stuck for want of a step that is not here."
+    ]
+
+
+viewPreset : String -> Html Msg
+viewPreset brief =
+    Html.button
+        [ Attr.class "preset secondary"
+        , Attr.title brief
+        , Events.onClick (BriefChanged brief)
+        ]
+        [ Html.text (String.takeFirst 28 brief ++ "…") ]
 
 
 {-| The socket to the daemon, in one word.
@@ -2174,13 +2382,54 @@ viewPiece piece =
 thread each one is. A resolved thread is not marked, so a highlight always leads
 somewhere still open -- which is the point of following one.
 -}
+needleFor : Anchor -> Marks.Needle
+needleFor anchor =
+    { quote = anchor.quote, prefix = anchor.prefix, suffix = anchor.suffix }
+
+
+{-| The threads of a document in the order their passages appear in it.
+
+Filed order is when the reviewer happened to ask; for a pass it is an artefact
+of the order the model wrote its answer in, which is nothing the reader can see.
+Document order is the order the page beside the column is read in.
+
+A thread whose passage is gone has no place in the document to sort by, and goes
+to the bottom -- which is where an outdated thread belongs anyway. Among equals
+the order they were filed in is kept, so the column does not reshuffle itself
+every time a thread is re-anchored.
+
+-}
+inDocumentOrder : Array Range -> Array Thread -> Array Thread
+inDocumentOrder found threads =
+    let
+        placed =
+            Array.indexedMap (\index range -> { index = index, thread = range.thread }) found
+                |> Array.foldl (\entry acc -> Dict.set entry.thread entry.index acc) Dict.empty
+
+        rank thread =
+            Maybe.withDefault (Array.length found) (Dict.get thread.id placed)
+    in
+    threads
+        |> Array.indexedMap (\index thread -> { filed = index, thread = thread })
+        |> Array.sortWith
+            (\a b ->
+                when compare (rank a.thread) (rank b.thread) is
+                    EQ ->
+                        compare a.filed b.filed
+
+                    other ->
+                        other
+            )
+        |> Array.map .thread
+
+
 marksIn : Array Char -> Array Thread -> Array Range
 marksIn plain threads =
     threads
         |> Array.keepIf (\thread -> thread.status /= Resolved)
         |> Array.mapAndKeepJust
             (\thread ->
-                Marks.find plain thread.anchor.quote
+                Marks.find plain (needleFor thread.anchor)
                     |> Maybe.map
                         (\at -> { start = at.start, end = at.end, thread = thread.id })
             )
@@ -2208,15 +2457,71 @@ viewSidebar model =
 viewThread : Dict String String -> Thread -> Html Msg
 viewThread drafts thread =
     Html.section
-        [ Attr.class ("thread " ++ statusClass thread.status)
+        [ Attr.class (String.join " " [ "thread", statusClass thread.status, originClass thread ])
         , Attr.id (threadElementId thread.id)
         , Attr.attribute "data-thread-id" thread.id
         ]
-        [ Html.blockquote [ Attr.class "quote" ] [ Html.text thread.anchor.quote ]
+        [ viewRaisedBy thread
+        , Html.blockquote [ Attr.class "quote" ] [ Html.text thread.anchor.quote ]
         , Html.div [ Attr.class "messages" ] (Array.map viewMessage thread.messages)
         , viewCommitLink thread.commit
         , viewThreadActions drafts thread
         ]
+
+
+{-| A thread the reviewer did not open says so, and says what it was asked to
+look for.
+
+The brief is the answer to "why is this comment here?", which is a question a
+reviewer asks three passes later and cannot otherwise answer. It is one string
+recording what was asked, not a classification of what the model meant.
+
+-}
+viewRaisedBy : Thread -> Html Msg
+viewRaisedBy thread =
+    if thread.origin /= Model then
+        Html.text ""
+
+    else
+        Html.div
+            [ Attr.class "raised"
+            , Attr.title
+                (if String.isEmpty thread.brief then
+                    "Raised by a review of this document"
+
+                 else
+                    "Raised by a review looking for: " ++ thread.brief
+                )
+            ]
+            [ Html.text "raised by review" ]
+
+
+{-| `awaits` is the whole of what a machine comment adds to the lifecycle: the
+model has spoken and is waiting on a person, where a reviewer's own thread is
+the other way round. It is read off who spoke last rather than stored, which is
+why there are still four statuses.
+-}
+originClass : Thread -> String
+originClass thread =
+    let
+        awaits =
+            thread.status == Open && lastSpeaker thread == Just Assistant
+    in
+    when thread.origin is
+        Model ->
+            if awaits then
+                "raised-by-model awaits"
+
+            else
+                "raised-by-model"
+
+        Reviewer ->
+            "raised-by-reviewer"
+
+
+lastSpeaker : Thread -> Maybe Role
+lastSpeaker thread =
+    Array.last thread.messages |> Maybe.map .role
 
 
 viewMessage : Protocol.Message -> Html Msg

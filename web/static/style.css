@@ -173,6 +173,63 @@ html, body {
 .conn-open { color: var(--muted); }
 .conn-closed, .conn-connecting { color: var(--danger); }
 
+/* ------------------------------------------------------- reviewing pass */
+
+/* The trigger and the one-off, as one control: the pair reads as a button with
+   an alternative rather than two buttons that happen to be adjacent. */
+.review-controls { display: flex; }
+
+.review, .review-brief {
+  border: 1px solid var(--rule);
+  background: var(--bg);
+  color: var(--ink);
+  padding: 0.3rem 0.7rem;
+  font: inherit;
+  cursor: pointer;
+}
+.review { border-radius: 6px 0 0 6px; }
+.review-brief {
+  border-left: none;
+  border-radius: 0 6px 6px 0;
+  color: var(--muted);
+  padding-inline: 0.55rem;
+}
+.review:hover, .review-brief:hover { border-color: var(--accent); color: var(--accent); }
+.review:disabled, .review-brief:disabled { opacity: 0.5; cursor: default; }
+
+/* The brief for one pass. Same furniture as the composer: it is the same kind
+   of thing -- typed words the server cannot give back. */
+.briefing {
+  position: fixed;
+  right: 23.5rem;
+  bottom: 2rem;
+  width: 26rem;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
+  padding: 0.85rem;
+  font-family: system-ui, sans-serif;
+  font-size: 0.875rem;
+}
+.briefing label { display: block; margin-bottom: 0.4rem; color: var(--muted); }
+.briefing textarea { width: 100%; min-height: 5.5rem; resize: vertical; }
+.briefing .actions { display: flex; gap: 0.4rem; margin-top: 0.5rem; }
+
+/* The presets fill the box rather than replace it, so they are laid out as
+   suggestions under the field they write into and not as a row of choices. */
+.briefing .presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin-top: 0.5rem;
+}
+.briefing .preset {
+  font-size: 0.75rem;
+  padding: 0.2rem 0.45rem;
+  color: var(--muted);
+}
+
 .interrupt {
   border: 1px solid var(--rule);
   background: var(--bg);
@@ -497,6 +554,23 @@ mark.anchored.changed {
 .thread.outdated { border-style: dashed; }
 .thread.thinking { border-color: var(--accent); }
 
+/* A comment the reviewer did not write. The bar down the side is the whole
+   signal: it is the same shape as every other thread, because it is the same
+   thing, and what differs is only who spoke first. */
+.thread.raised-by-model { box-shadow: inset 0.15rem 0 0 var(--anchor-edge); }
+
+/* Waiting on a person rather than on the model. This is the state a machine
+   review adds, and it is drawn rather than stored: the status is still open. */
+.thread.raised-by-model.awaits { border-color: var(--anchor-edge); }
+
+.thread .raised {
+  margin-bottom: 0.4rem;
+  color: var(--muted);
+  font-size: 0.6875rem;
+  font-variant: small-caps;
+  letter-spacing: 0.04em;
+}
+
 .thread .quote {
   margin: 0 0 0.5rem;
   padding-left: 0.6rem;
@@ -638,4 +712,5 @@ button.icon svg { flex-shrink: 0; }
   .prose > [data-line]::before, .prose li[data-line]::before { display: none; }
   .threads { width: 100%; border-left: none; border-top: 1px solid var(--rule); }
   .composer { right: 1rem; left: 1rem; width: auto; }
+  .briefing { right: 1rem; left: 1rem; width: auto; }
 }
