@@ -236,6 +236,7 @@ type Msg
     | ChangesShown Bool
     | FocusThread String
     | ThreadScrolled
+    | DocScrolled
     | DismissError
 
 
@@ -570,6 +571,10 @@ update msg model =
             -- Nothing to do; the scroll either happened or the thread was gone.
             stay model
 
+        DocScrolled ->
+            -- Nothing to do; the pane is at the top, or there was no pane.
+            stay model
+
         DismissError ->
             stay { model | error = Nothing }
 
@@ -594,7 +599,21 @@ applyServerMsg frame model =
             -- reason to throw a draft away. When the passage itself has gone,
             -- the composer says so and still keeps the words.
             if payload.doc.path == model.opened then
-                stay (afterDocChange payload.doc payload.changes model)
+                { model = afterDocChange payload.doc payload.changes model
+                , command =
+                    -- A different document starts at its beginning. The pane
+                    -- keeps whatever scroll position the last one left it at,
+                    -- so opening a short file from halfway down a long one
+                    -- arrives somewhere past its end, on blank space. Another
+                    -- render of the same document is not a move and must leave
+                    -- the reader where they were reading -- the daemon sends
+                    -- one on every save, and on every edit the model makes.
+                    if alreadyOpen payload.doc model.current then
+                        Cmd.none
+
+                    else
+                        showTopOfDoc
+                }
 
             else
                 stay model
@@ -922,6 +941,31 @@ threadsPaneId =
 threadElementId : String -> String
 threadElementId threadId =
     "thread-" ++ threadId
+
+
+{-| Whether a render that has arrived is of the document already on screen.
+-}
+alreadyOpen : Doc -> Maybe Doc -> Bool
+alreadyOpen doc current =
+    when current is
+        Just shown ->
+            shown.path == doc.path
+
+        Nothing ->
+            False
+
+
+{-| Put the document pane back at the top, for a document that has just opened.
+-}
+showTopOfDoc : Cmd Msg
+showTopOfDoc =
+    Dom.setViewportOf docPaneId 0 0
+        |> Task.attempt (\_ -> DocScrolled)
+
+
+docPaneId : String
+docPaneId =
+    "doc-pane"
 
 
 {-| Scroll the picker's list so the highlighted row is in it.
@@ -2023,7 +2067,7 @@ viewError maybeError =
 viewDocument : Model -> Html Msg
 viewDocument model =
     Html.main_
-        [ Attr.class "doc", Attr.id "doc-pane" ]
+        [ Attr.class "doc", Attr.id docPaneId ]
         [ when model.current is
             Just doc ->
                 .html (viewNode (marking model) 0 doc.root)
