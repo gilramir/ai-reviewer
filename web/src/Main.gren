@@ -84,6 +84,17 @@ colour on it, and the daemon has no business holding either answer.
 port rememberChanges : Bool -> Cmd msg
 
 
+{-| Remember whether resolved threads are wanted in the column.
+
+The same kind of preference, kept in the same place and for the same reason --
+and worth remembering rather than asking again, because the answer is given
+while a review is filling the column up and the reload that would forget it is
+usually in the middle of one.
+
+-}
+port rememberResolved : Bool -> Cmd msg
+
+
 -- MODEL
 
 
@@ -99,6 +110,7 @@ type alias Model =
     , marks : Array Range
     , changes : Array Change
     , showChanges : Bool
+    , showResolved : Bool
     , replyDrafts : Dict String String
     , connection : String
     , settings : Maybe Protocol.Settings
@@ -171,7 +183,7 @@ this is the app being told what that was rather than deciding it again. The
 change highlight comes the same way, though only because the two are the same
 kind of thing: nothing is drawn in it until a document arrives.
 -}
-init : { theme : String, showChanges : Bool } -> { model : Model, command : Cmd Msg }
+init : { theme : String, showChanges : Bool, showResolved : Bool } -> { model : Model, command : Cmd Msg }
 init flags =
     { model =
         { theme = flags.theme
@@ -185,6 +197,7 @@ init flags =
         , marks = []
         , changes = []
         , showChanges = flags.showChanges
+        , showResolved = flags.showResolved
         , replyDrafts = Dict.empty
         , connection = "connecting"
         , settings = Nothing
@@ -234,6 +247,7 @@ type Msg
     | ClearContext
     | ThemePicked String
     | ChangesShown Bool
+    | ResolvedShown Bool
     | FocusThread String
     | FocusPassage String
     | ThreadScrolled
@@ -562,6 +576,11 @@ update msg model =
             -- off is a question about this page, not about the document, and
             -- turning it back on should not have to wait for a re-render.
             { model = { model | showChanges = wanted }, command = rememberChanges wanted }
+
+        ResolvedShown wanted ->
+            -- The threads stay in the model, as the changes do: this is a
+            -- question about how full the column is, not about what is in it.
+            { model = { model | showResolved = wanted }, command = rememberResolved wanted }
 
         FocusThread threadId ->
             -- The reviewer pointed at a highlighted passage, which is how you
@@ -1245,6 +1264,7 @@ viewTopBar model =
         , Html.div
             [ Attr.class "state" ]
             [ viewWorking model
+            , viewResolvedButton model
             , viewSettingsButton model
             , viewConnection model.connection
             ]
@@ -1285,6 +1305,50 @@ viewReviewButtons model =
                 , Events.onClick OpenBriefing
                 ]
                 [ Html.text "for…" ]
+            ]
+
+
+{-| Put the answered threads away.
+
+A review fills the column faster than anyone answers it, and every thread that
+has been dealt with is a card between the reviewer and the ones that have not.
+Resolving is already the way to say "done with this"; this is the other half of
+it, and it belongs in the bar rather than in the settings panel because it is
+used while reading rather than set once.
+
+The label says what the click will do and how much of the column it is about, so
+nothing has to be drawn to say which way the toggle is -- and with nothing
+resolved yet there is no button at all, which is most of a session.
+
+-}
+viewResolvedButton : Model -> Html Msg
+viewResolvedButton model =
+    let
+        resolved =
+            Array.length (Array.keepIf (\thread -> thread.status == Resolved) model.threads)
+    in
+    if resolved == 0 then
+        Html.text ""
+
+    else
+        Html.button
+            [ Attr.classList
+                [ { class = "resolved-toggle", enabled = True }
+                , { class = "active", enabled = not model.showResolved }
+                ]
+            , Attr.title "Resolved threads are the ones already dealt with"
+            , Events.onClick (ResolvedShown (not model.showResolved))
+            ]
+            [ Html.text
+                ((if model.showResolved then
+                    "hide "
+
+                  else
+                    "show "
+                 )
+                    ++ String.fromInt resolved
+                    ++ " resolved"
+                )
             ]
 
 
@@ -2558,16 +2622,34 @@ marksIn plain threads =
 
 viewSidebar : Model -> Html Msg
 viewSidebar model =
+    let
+        shown =
+            if model.showResolved then
+                model.threads
+
+            else
+                Array.keepIf (\thread -> thread.status /= Resolved) model.threads
+    in
     Html.aside
         [ Attr.class "threads", Attr.id threadsPaneId ]
-        (if Array.isEmpty model.threads then
+        (if Array.isEmpty shown then
             [ Html.p
                 [ Attr.class "empty" ]
-                [ Html.text "Select text in the document to comment." ]
+                [ Html.text
+                    -- An empty column and a column emptied by the toggle are
+                    -- not the same thing, and the reviewer who put the threads
+                    -- away five minutes ago should not have to remember that.
+                    (if Array.isEmpty model.threads then
+                        "Select text in the document to comment."
+
+                     else
+                        "Every thread here is resolved, and resolved threads are hidden."
+                    )
+                ]
             ]
 
          else
-            Array.map (viewThread model.marks model.replyDrafts) model.threads
+            Array.map (viewThread model.marks model.replyDrafts) shown
         )
 
 
@@ -2946,7 +3028,7 @@ keyAction keys event =
 -- MAIN
 
 
-main : Program { theme : String, showChanges : Bool } Model Msg
+main : Program { theme : String, showChanges : Bool, showResolved : Bool } Model Msg
 main =
     Browser.element
         { init = init

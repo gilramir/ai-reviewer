@@ -2,9 +2,10 @@
 // plumbing that Gren cannot express; no application logic lives in this file,
 // and it holds no state the Gren model does not already own.
 //
-// Two of them are not plumbing but memory. The theme has to reach <html>, which
-// a Gren program mounted into <div id="root"> does not own, and both it and the
-// change highlight are remembered between visits, which means storage.
+// Three of them are not plumbing but memory. The theme has to reach <html>,
+// which a Gren program mounted into <div id="root"> does not own, and it, the
+// change highlight and whether resolved threads are shown are all remembered
+// between visits, which means storage.
 
 (function () {
   "use strict";
@@ -13,6 +14,7 @@
 
   var THEME_KEY = "ai-reviewer.theme";
   var CHANGES_KEY = "ai-reviewer.changes";
+  var RESOLVED_KEY = "ai-reviewer.resolved";
 
   // Whatever the script in index.html already applied. Reading it back rather
   // than reading storage a second time keeps one answer to "which theme is
@@ -33,9 +35,23 @@
     }
   }
 
+  // Shown unless they were put away, and shown again if storage cannot be read.
+  // Same trade as the highlight: the safe answer is the one that hides nothing.
+  function showResolved() {
+    try {
+      return window.localStorage.getItem(RESOLVED_KEY) !== "off";
+    } catch (err) {
+      return true;
+    }
+  }
+
   var app = Gren.Main.init({
     node: document.getElementById("root"),
-    flags: { theme: currentTheme(), showChanges: showChanges() },
+    flags: {
+      theme: currentTheme(),
+      showChanges: showChanges(),
+      showResolved: showResolved(),
+    },
   });
 
   app.ports.setTheme.subscribe(function (theme) {
@@ -64,6 +80,16 @@
         window.localStorage.removeItem(CHANGES_KEY);
       } else {
         window.localStorage.setItem(CHANGES_KEY, "off");
+      }
+    } catch (err) {}
+  });
+
+  app.ports.rememberResolved.subscribe(function (wanted) {
+    try {
+      if (wanted) {
+        window.localStorage.removeItem(RESOLVED_KEY);
+      } else {
+        window.localStorage.setItem(RESOLVED_KEY, "off");
       }
     } catch (err) {}
   });

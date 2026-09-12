@@ -269,6 +269,15 @@ Threads land as each section finishes, so you start reading before the pass
 does. The split is at the shallowest heading level that occurs more than once —
 a level that occurs once is a title, a level that repeats is a structure.
 
+**A pass fills the column faster than anyone empties it**, which is why the bar
+carries a **hide _n_ resolved** button. Resolving is already how you say "done
+with this"; a thread that has been dealt with is otherwise a card between the
+reviewer and the ones that have not. The button appears only once something has
+been resolved, and its label says what the click will do — so nothing has to be
+drawn to say which way the toggle is. The answer is remembered in the browser
+like the theme, because the reload that would forget it usually happens in the
+middle of the pass that made it necessary.
+
 **The quote is the hard part.** A comment whose passage cannot be found is a
 remark with nowhere to put it, so the section's text goes into the prompt as
 the *reader* sees it and the model is told to quote out of that. Letting it

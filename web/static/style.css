@@ -173,6 +173,22 @@ html, body {
 .conn-open { color: var(--muted); }
 .conn-closed, .conn-connecting { color: var(--danger); }
 
+/* Putting the answered threads away. Drawn like the document button rather than
+   like Review: it is a view control, in the same family as the settings toggle
+   it sits beside, and neither of them does anything to the review itself. */
+.resolved-toggle {
+  border: 1px solid var(--rule);
+  background: var(--bg);
+  color: var(--muted);
+  font: inherit;
+  padding: 0.2rem 0.5rem;
+  border-radius: 999px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.resolved-toggle:hover { border-color: var(--accent); filter: none; }
+.resolved-toggle.active { border-color: var(--accent); color: var(--accent); }
+
 /* ------------------------------------------------------- reviewing pass */
 
 /* The trigger and the one-off, as one control: the pair reads as a button with
