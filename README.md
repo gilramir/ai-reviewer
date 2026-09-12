@@ -82,6 +82,12 @@ missing, a passage that contradicts another. They arrive as ordinary threads:
 highlighted on the page, and yours to answer, argue with, or resolve. Replying
 *"yes, fix that"* gets it fixed like any other request.
 
+They sit in the margin with everything else, in document order, marked by a bar
+down the side and the words *raised by review* — whose tooltip is the brief that
+produced them. The bar brightens while the thread is waiting on you, which is
+the state a machine comment adds: the model has said its piece and nobody has
+answered.
+
 The comments appear section by section as it works, so you can start reading
 before it finishes; the **interrupt** button stops it and keeps what arrived.
 
@@ -116,9 +122,9 @@ and the documents that embed it re-render on their own.
 
 The pill in the top bar names the model — `opus`, `sonnet`, or *default model*
 when the choice is left to your own `claude` configuration. Clicking it opens a
-panel with the rest: the tools, the permission mode, where Claude runs, the
-review branch, what the session has cost, and which `claude` binary is
-answering.
+panel with the rest: the tools, the smaller set a review pass gets, the
+permission mode, where Claude runs, the review branch, what the session has
+cost, and which `claude` binary is answering.
 
 - **Model** can be changed mid-review. Each document's conversation resumes on
   the new model with its next comment, so nothing already said is lost. The
@@ -215,6 +221,10 @@ and spend, the review branch, the chosen model — and, outside a repository, th
 snapshots. **Add it to your `.gitignore`**: it will sit in `git status` until
 you do.
 
+`review.md` lives there too, if you wrote one. It is the one file in the
+directory that is yours rather than the daemon's: the standing brief every
+**Review** reads, and nothing rewrites it under you.
+
 The password is not in there. It is a digest in
 `~/.config/ai-reviewer/config.json` and belongs to you, not to any one review.
 
@@ -222,6 +232,9 @@ The password is not in there. It is a digest in
 
 - Claude runs with `Read, Edit, Write, Grep, Glob` and no Bash, and with none
   of your personal MCP servers. The daemon is the only writer of git history.
+- A review pass is a second process with a smaller set — `Read, Grep, Glob` —
+  so the run that reads your document to comment on it cannot edit it. Both
+  sets are in the settings panel.
 - Claude's working directory is the repository root, not `--root`, so it can
   read the sources a document links to. That is also its reach: it can edit
   anything in the repository, the same as when you run `claude` there yourself.
@@ -243,6 +256,8 @@ disconnected is queued and sent on reconnect.
   the reasoning behind the design.
 - [docs/backendClaude.md](docs/backendClaude.md) — how to drive the Claude
   Code CLI from your own program, which is what this daemon does.
+- [docs/machineReview.md](docs/machineReview.md) — the machine reviewer as it
+  was argued out, kept in the tense it was proposed in.
 
 ## License
 

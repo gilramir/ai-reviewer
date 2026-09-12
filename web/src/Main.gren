@@ -1772,6 +1772,13 @@ viewSettingRows : Protocol.Settings -> Array (Html Msg)
 viewSettingRows settings =
     Array.flatten
         [ [ setting "tools" (String.join ", " settings.tools)
+          -- The second row is the whole evidence for "it never edits during
+          -- a review": the pass runs as its own process with its own list,
+          -- and a reviewer is entitled to read that list rather than take
+          -- the promise. Shown always, not only when the two differ, since
+          -- a row that appears when there is something to hide is worth
+          -- nothing on the day it is missing.
+          , setting "review tools" (String.join ", " settings.criticTools)
           , setting "permissions" settings.permissionMode
           , setting "claude runs in" settings.workspace
           ]
