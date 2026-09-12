@@ -17,6 +17,7 @@ import Html exposing (Html)
 import Html.Attributes as Attr
 import Html.Events as Events
 import Html.Keyed
+import Html.Lazy
 import Json.Decode as Decode
 import Json.Encode as Encode
 import Marks exposing (Change, Range)
@@ -2187,17 +2188,49 @@ viewError maybeError =
             Html.text ""
 
 
+{-| The document, drawn only when something about the document has changed.
+
+Everything else in the model redraws on a keystroke -- a letter typed into a
+reply is a new model, and `view` runs again over all of it. The threads column
+that letter belongs to is a dozen cards and diffing it is nothing; this pane is
+several thousand nodes, each one splitting its text around the passages that
+cover it, and rebuilding all of that to discover that not a word of it moved
+measured at 42ms a keystroke on a hundred-kilobyte document. Typing lagged, and
+the lag was in the half of the page not being typed into.
+
+`lazy` compares its arguments and reuses the tree it built last time when they
+have not changed. They are passed one by one, straight out of the model, rather
+than as one record assembled here: a record built on the way past is a new
+record every time, and the thunk would never hit.
+
+-}
 viewDocument : Model -> Html Msg
 viewDocument model =
     Html.main_
         [ Attr.class "doc", Attr.id docPaneId ]
-        [ when model.current is
-            Just doc ->
-                .html (viewNode (marking model) 0 doc.root)
+        [ Html.Lazy.lazy4 viewDocumentBody model.current model.marks model.changes model.showChanges ]
 
-            Nothing ->
-                Html.p [ Attr.class "empty" ] [ Html.text "Select a document." ]
-        ]
+
+viewDocumentBody : Maybe Doc -> Array Range -> Array Change -> Bool -> Html Msg
+viewDocumentBody current marks changes showChanges =
+    when current is
+        Just doc ->
+            .html
+                (viewNode
+                    { marks = marks
+                    , changes =
+                        if showChanges then
+                            changes
+
+                        else
+                            []
+                    }
+                    0
+                    doc.root
+                )
+
+        Nothing ->
+            Html.p [ Attr.class "empty" ] [ Html.text "Select a document." ]
 
 
 -- DOCUMENT RENDERING
@@ -2216,18 +2249,6 @@ together because every leaf has to ask both.
 type alias Marking =
     { marks : Array Range
     , changes : Array Change
-    }
-
-
-marking : Model -> Marking
-marking model =
-    { marks = model.marks
-    , changes =
-        if model.showChanges then
-            model.changes
-
-        else
-            []
     }
 
 
