@@ -126,10 +126,14 @@ that is already listed as having a comment on it.`
 // fault, and fault is what comes back -- a remark on every paragraph, none of
 // it falsifiable. Naming a reader instead gives the pass a test it can apply
 // and, more to the point, a reason to stay quiet.
-const defaultBrief = `Read this as someone who has not seen it before and needs it to be right.
-Raise what makes such a reader stop: a claim that looks wrong, a step that is
-missing, a sentence that can be read two ways, a passage that contradicts
-another. Say nothing about anything that merely could be phrased differently.`
+//
+// One paragraph and no line breaks of its own: a brief is prose for a model,
+// and the reviewer edits it in a box four inches wide. Wrapping it here only
+// means it arrives there wrapped twice.
+const defaultBrief = "Read this as someone who has not seen it before and needs it to be right. " +
+	"Raise what makes such a reader stop: a claim that looks wrong, a step that is missing, " +
+	"a sentence that can be read two ways, a passage that contradicts another. " +
+	"Say nothing about anything that merely could be phrased differently."
 
 // criticPrompt asks for one section.
 //
