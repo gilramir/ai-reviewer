@@ -65,13 +65,41 @@ bare quote =
 
 suites : Array U.Suite
 suites =
-    [ findingAPassage
+    [ theTextAsCharacters
+    , findingAPassage
     , passagesThatAreNotThere
     , choosingBetweenOccurrences
     , splittingARun
     , twoHighlightsAtOnce
     , overlappingComments
     ]
+
+
+{-| The text as the characters everything else here indexes into.
+
+Worth a test of its own because the obvious way to build it is the slow one.
+`String.toArray` is a fold over `Array.pushLast`, which copies the array once per
+character: on a hundred-thousand-character document that measured at eight
+seconds of a browser doing nothing else. Whatever replaces it has to keep
+counting in code points, because a range that came back from the server is
+counted that way and a JavaScript string is not.
+
+-}
+theTextAsCharacters : U.Suite
+theTextAsCharacters =
+    U.suite
+        { name = "Marks.plainText"
+        , setUpSuite = U.noSuiteFixture
+        , tearDownSuite = U.noTearDown
+        , setUp = U.noFixture
+        , tearDown = U.noTearDown
+        , tests =
+            [ U.test "every character of the text, in order" <| \_ ->
+                expect (Expect.equal document (String.fromArray plain))
+            , U.test "a character outside the basic plane is one character" <| \_ ->
+                expect (Expect.equal 3 (Array.length (Marks.plainText "a🙂b")))
+            ]
+        }
 
 
 {-| A browser hands over the text of a selection. The document is the rendered

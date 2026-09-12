@@ -28,6 +28,7 @@ them.
 -}
 
 import Array exposing (Array)
+import Array.Builder as Builder
 import Char
 
 
@@ -92,10 +93,19 @@ type alias Piece =
 
 
 {-| The document text as the characters `find` searches.
+
+Not `String.toArray`, which is a fold over `Array.pushLast` -- and `pushLast`
+copies the whole array to add one element to it. That is nothing for a quote and
+quadratic for a document: a hundred thousand characters is five thousand million
+copies, which measured at eight seconds of a browser doing nothing else and
+three more collecting the arrays it threw away. A builder fills one array and
+hands it over at the end.
+
 -}
 plainText : String -> Array Char
 plainText text =
-    String.toArray text
+    String.foldl Builder.pushLast (Builder.empty (String.count text)) text
+        |> Builder.toArray
 
 
 {-| Where a passage sits in the document, or nothing when it is gone.
