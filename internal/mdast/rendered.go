@@ -18,6 +18,21 @@ import "strings"
 type Rendered struct {
 	Text string
 	Runs []Run
+	// Blocks is where each top-level element of the document fell in Text. It
+	// is what lets a reviewing pass hand a model one section of the document
+	// and still be searching the same string the anchors are found in.
+	Blocks []Block
+}
+
+// Block is one top-level element of a document and the stretch of rendered text
+// it produced.
+type Block struct {
+	Kind  Kind
+	Level int    // heading level; 0 for everything else
+	Title string // a heading's own rendered text; empty otherwise
+
+	TextStart int
+	TextEnd   int
 }
 
 // Run is one stretch of the rendered text and where it came from.
@@ -43,14 +58,61 @@ func Flatten(src []byte) Rendered {
 	doc := Render("", 0, src)
 
 	f := flattener{src: src}
-	f.walk(doc.Root)
-	return Rendered{Text: f.text.String(), Runs: f.runs}
+	f.top(doc.Root)
+	return Rendered{Text: f.text.String(), Runs: f.runs, Blocks: f.blocks}
 }
 
 type flattener struct {
-	src  []byte
-	text strings.Builder
-	runs []Run
+	src    []byte
+	text   strings.Builder
+	runs   []Run
+	blocks []Block
+}
+
+// top walks the document and notes where each of its top-level children began
+// and ended in the text.
+//
+// The offsets are taken during the walk that builds the text rather than
+// measured off the finished string afterwards. Measuring afterwards would mean
+// a second traversal counting characters, and a second traversal is a second
+// opinion about the one string this file exists to be the only source of.
+func (f *flattener) top(root Node) {
+	f.emit(ownText(root), root.Span)
+
+	for _, child := range root.Children {
+		start := f.text.Len()
+		f.walk(child)
+		f.blocks = append(f.blocks, Block{
+			Kind:      child.Kind,
+			Level:     child.Level,
+			Title:     headingTitle(child),
+			TextStart: start,
+			TextEnd:   f.text.Len(),
+		})
+	}
+
+	if isBlock(root.Kind) {
+		f.separate()
+	}
+}
+
+// headingTitle is a heading's text, for naming the section it opens. Empty for
+// everything that is not a heading, which is how a section without one is told
+// apart from a section whose heading happens to be blank.
+func headingTitle(node Node) string {
+	if node.Kind != KindHeading {
+		return ""
+	}
+	var b strings.Builder
+	var walk func(Node)
+	walk = func(n Node) {
+		b.WriteString(ownText(n))
+		for _, child := range n.Children {
+			walk(child)
+		}
+	}
+	walk(node)
+	return strings.TrimSpace(b.String())
 }
 
 func (f *flattener) walk(node Node) {
