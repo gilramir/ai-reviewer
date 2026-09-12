@@ -321,6 +321,11 @@ func announce(listen, branch, root, workRoot, secret string, noAuth bool) {
 // It spells both merges out because the reviewer this tool is for is not
 // necessarily fluent in git, and every one of these commands is one they can
 // undo: nothing here rewrites history.
+//
+// Each merge ends in its own delete rather than the two sharing one, because
+// they cannot share one: -d refuses after a squash. A single -d printed under
+// both, however carefully the paragraph after it explains itself, is the
+// command that fails for whoever squashed.
 func landing(s review.Settings) string {
 	// Outside a repository there is no branch to merge. The review kept
 	// snapshots of each file instead, and those are not going anywhere.
@@ -353,16 +358,18 @@ func landing(s review.Settings) string {
 	fmt.Fprintf(&b, "\n  %s on %s.\n", countedCommits(s.Commits), s.Branch)
 	fmt.Fprintf(&b, "  Nothing reaches %s until you merge %s:\n\n", base, them(s.Commits))
 	fmt.Fprintf(&b, "    git switch %s\n", base)
-	fmt.Fprintf(&b, "    git merge %s\n\n", s.Branch)
+	fmt.Fprintf(&b, "    git merge %s\n", s.Branch)
+	fmt.Fprintf(&b, "    git branch -d %s\n\n", s.Branch)
 	b.WriteString(squash)
 	fmt.Fprintf(&b, "    git switch %s\n", base)
 	fmt.Fprintf(&b, "    git merge --squash %s\n", s.Branch)
-	fmt.Fprintf(&b, "    git commit\n\n")
-	fmt.Fprintf(&b, "  Either way the review branch is then yours to delete:\n\n")
-	fmt.Fprintf(&b, "    git branch -d %s\n\n", s.Branch)
-	fmt.Fprintf(&b, "  After a squash that one is refused: the single commit is not the\n")
-	fmt.Fprintf(&b, "  commits on the branch, so git cannot tell they landed. Delete it\n")
-	fmt.Fprintf(&b, "  with git branch -D %s once you have checked that they did.\n\n", s.Branch)
+	fmt.Fprintf(&b, "    git commit\n")
+	fmt.Fprintf(&b, "    git branch -D %s\n\n", s.Branch)
+	fmt.Fprintf(&b, "  The last line of each is only if you want the branch gone, and the\n")
+	fmt.Fprintf(&b, "  two are not the same command. After a squash the single commit is\n")
+	fmt.Fprintf(&b, "  not the commits on the branch, so git cannot tell they landed and\n")
+	fmt.Fprintf(&b, "  refuses the lowercase -d. Look at what you merged, then use -D,\n")
+	fmt.Fprintf(&b, "  which deletes without checking.\n\n")
 	return b.String()
 }
 

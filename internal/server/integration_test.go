@@ -1062,6 +1062,11 @@ func TestSettingsReportTheBranchAndHowToMergeIt(t *testing.T) {
 	if remove := landingField(settings, "delete"); remove != "git branch -d review/test" {
 		t.Errorf("landing.delete = %q", remove)
 	}
+	// The squash needs the capital -D: git cannot see one commit as the
+	// commits it was squashed from, so it refuses the lowercase one.
+	if remove := landingField(settings, "squashDelete"); remove != "git branch -D review/test" {
+		t.Errorf("landing.squashDelete = %q", remove)
+	}
 
 	// What the reviewer does with that command, in their own terminal.
 	gitRun(t, root, "switch", "main")

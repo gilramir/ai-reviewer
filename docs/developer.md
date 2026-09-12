@@ -436,6 +436,15 @@ than no button — so the command is shown where it can be read and copied, and
 run somewhere that can answer for it. Nothing else about the review depends on
 when you do that.
 
+Both merges are offered, and each carries its own delete rather than the two
+sharing one, because they cannot share one. `git branch -d` refuses unless git
+can see the commits on the branch reached the base, and after a squash it
+cannot: the single commit that landed is not those commits. So the squash path
+ends in `-D`, with the words above it asking for the look at the result that
+`-d` would otherwise have done. A shared `-d` with a paragraph of explanation
+after it was the earlier shape, and it printed a command that fails to whoever
+took the second path.
+
 The count is `git rev-list --count base..HEAD` rather than a tally the daemon
 keeps, so it falls to zero on its own once the commits are in — including when
 you merge from a terminal, which the daemon never hears about. Outside a

@@ -62,8 +62,8 @@ func TestListenAllIsNotLoopback(t *testing.T) {
 }
 
 // The advice at shutdown is the only place many reviewers will be told how to
-// land a review, so each of the three things it has to say has to be in it:
-// both merges, and the delete that a squash then refuses.
+// land a review, so everything it has to say has to be in it: both merges, and
+// under each the delete that works after that one.
 func TestLanding(t *testing.T) {
 	tests := []struct {
 		name     string

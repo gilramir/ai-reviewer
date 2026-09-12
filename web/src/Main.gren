@@ -1820,9 +1820,9 @@ page that has no diff and no way out is worse than no button at all -- so what
 the panel offers is the commands, ready to be read and run somewhere that can
 answer it.
 
-Both merges are offered, and the delete after them, because the reviewer is as
-often a writer as a programmer: a branch name and the word "merge" are not an
-instruction to someone who has never typed one.
+Both merges are offered, each with the delete that follows it, because the
+reviewer is as often a writer as a programmer: a branch name and the word
+"merge" are not an instruction to someone who has never typed one.
 
 -}
 viewBranch : Protocol.Settings -> Html Msg
@@ -1842,12 +1842,13 @@ viewBranch settings =
         ]
 
 
-{-| The three ways a review ends, each under the words that say what it does.
+{-| The two ways a review ends, each with its delete, under the words that say
+what it does.
 
-The delete carries its own warning: `-d` is refused after a squash merge, since
-the single commit that landed is not the commits on the branch and git cannot
-tell they arrived. Offering `-D` instead would be offering it before the look
-at the diff that makes it safe.
+The deletes differ, and the panel shows both rather than one with a caveat: a
+squash leaves git unable to see the commits landed, so it refuses `-d` on the
+branch. The words over `-D` carry the check that `-d` would have done, since
+that check is now the reviewer's to make.
 
 -}
 viewLanding : Protocol.Landing -> Array (Html Msg)
@@ -1857,8 +1858,11 @@ viewLanding landing =
 
     else
         [ viewCommand "keep the commits, one per turn" landing.merge
-        , viewCommand "or fold the review into one commit" landing.squash
         , viewCommand "then, if you want the branch gone" landing.delete
+        , viewCommand "or fold the review into one commit" landing.squash
+        , viewCommand
+            "then, once you have looked at what landed — a squash hides that from git, so -d is refused"
+            landing.squashDelete
         ]
 
 

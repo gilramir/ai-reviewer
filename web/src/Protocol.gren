@@ -130,15 +130,18 @@ type alias Conversation =
 
 {-| The commands a finished review ends in, as the daemon spells them out.
 
-Three rather than one, because "merge it" is two different decisions -- keep
-the turn-by-turn commits or fold them into one -- and because the branch is
-then left behind. All three are empty when there is nothing to land.
+Two paths of two, because "merge it" is two different decisions -- keep the
+turn-by-turn commits or fold them into one -- and each leaves the branch behind
+in a different state. The deletes are not interchangeable: `-d` refuses after a
+squash, so each merge carries the delete that works after it. All four are
+empty when there is nothing to land.
 
 -}
 type alias Landing =
     { merge : String
-    , squash : String
     , delete : String
+    , squash : String
+    , squashDelete : String
     }
 
 
@@ -410,15 +413,21 @@ landingDecoder : Decoder Landing
 landingDecoder =
     Decode.oneOf
         [ Decode.field "landing"
-            (Decode.map3
-                (\merge squash remove ->
-                    { merge = merge, squash = squash, delete = remove }
+            (Decode.map4
+                (\merge remove squash removeHard ->
+                    { merge = merge
+                    , delete = remove
+                    , squash = squash
+                    , squashDelete = removeHard
+                    }
                 )
                 (optionalString "merge")
-                (optionalString "squash")
                 (optionalString "delete")
+                (optionalString "squash")
+                (optionalString "squashDelete")
             )
-        , Decode.succeed { merge = "", squash = "", delete = "" }
+        , Decode.succeed
+            { merge = "", delete = "", squash = "", squashDelete = "" }
         ]
 
 

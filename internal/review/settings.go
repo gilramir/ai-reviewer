@@ -140,22 +140,31 @@ func (r *Review) Settings() Settings {
 	}
 }
 
-// Landing is the three commands a finished review ends in. They are spelled
-// out rather than left to the reviewer, who is as likely to be a writer as a
-// programmer: "your changes are on review/docs-2026-09-09" is not an
-// instruction to someone who has never typed git merge.
+// Landing is the commands a finished review ends in, as two paths of two: a
+// merge and the delete that follows it. They are spelled out rather than left
+// to the reviewer, who is as likely to be a writer as a programmer: "your
+// changes are on review/docs-2026-09-09" is not an instruction to someone who
+// has never typed git merge.
+//
+// The two deletes are not the same command, which is why each merge carries
+// its own rather than sharing one. A single -d underneath both is wrong half
+// the time, and being wrong on the path the reviewer took reads as the tool
+// being broken.
 type Landing struct {
 	// Merge brings the commits across as they are, one per turn, each carrying
 	// the comment that caused it.
 	Merge string `json:"merge"`
+	// Delete finishes that path. The lowercase -d refuses unless git can see
+	// the commits landed, which after a plain merge it can.
+	Delete string `json:"delete"`
 	// Squash lands the same final text as a single commit with a message of
 	// the reviewer's own, for a review that was one piece of work.
 	Squash string `json:"squash"`
-	// Delete is what to do with the branch afterwards. It is the lowercase -d,
-	// which refuses after a squash -- the one commit that landed is not the
-	// commits on the branch, so git cannot tell they arrived. Saying -D here
-	// would be saying it before the check that makes it safe.
-	Delete string `json:"delete"`
+	// SquashDelete finishes that one. It has to be the capital -D: the single
+	// commit that landed is not the commits on the branch, so git cannot tell
+	// they arrived and refuses -d. The check -d would have done is the
+	// reviewer's to make, which is what the words around this command say.
+	SquashDelete string `json:"squashDelete"`
 }
 
 // landingCommands spells out how to land a review. It is empty when there is
@@ -174,9 +183,10 @@ func landingCommands(branch, base string, commits int) Landing {
 	}
 
 	return Landing{
-		Merge:  switchTo + "git merge " + branch,
-		Squash: switchTo + "git merge --squash " + branch + " && git commit",
-		Delete: "git branch -d " + branch,
+		Merge:        switchTo + "git merge " + branch,
+		Delete:       "git branch -d " + branch,
+		Squash:       switchTo + "git merge --squash " + branch + " && git commit",
+		SquashDelete: "git branch -D " + branch,
 	}
 }
 

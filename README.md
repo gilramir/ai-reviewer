@@ -149,15 +149,18 @@ spells out each way to land it:
             keep the commits, one per turn
             git switch main && git merge review/docs-2026-09-09
 
+            then, if you want the branch gone
+            git branch -d review/docs-2026-09-09
+
             or fold the review into one commit
             git switch main && git merge --squash review/docs-2026-09-09 && git commit
 
-            then, if you want the branch gone
-            git branch -d review/docs-2026-09-09
+            then, once you have looked at what landed
+            git branch -D review/docs-2026-09-09
 ```
 
-Stopping the daemon prints the same three at more length, at the moment you are
-back in a terminal to act on them. Either way you run them yourself.
+Stopping the daemon prints the same commands at more length, at the moment you
+are back in a terminal to act on them. Either way you run them yourself.
 
 **Bring the commits across.** One per turn, each with the comment that caused
 it as its message:
@@ -180,7 +183,7 @@ Take the first when the turn-by-turn history is worth keeping — it is a record
 of what was asked and what changed in answer. Take the second when the review
 was one piece of work and the branch would just be noise in `git log`.
 
-**Then delete the review branch**, if you want it gone:
+**Then delete the review branch**, if you want it gone. After a plain merge:
 
 ```sh
 git branch -d review/docs-2026-09-09
@@ -188,9 +191,14 @@ git branch -d review/docs-2026-09-09
 
 After a squash merge that is refused: the single commit on `main` is not the
 commits on the branch, so git cannot tell they landed. Check with `git log` or
-`git diff main review/docs-2026-09-09` that nothing is left behind, then use a
-capital `-D` to delete it anyway. `-D` is also how you throw a review away
-having merged none of it.
+`git diff main review/docs-2026-09-09` that nothing is left behind, then delete
+it with the capital `-D`, which does not ask:
+
+```sh
+git branch -D review/docs-2026-09-09
+```
+
+`-D` is also how you throw a review away having merged none of it.
 
 Nothing here is one-way. Until you merge, the review branch is an ordinary
 branch: read it with `git log`, `git switch` to it and back, rebase or
