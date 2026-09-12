@@ -584,6 +584,31 @@ mark.anchored.changed {
   overflow: hidden;
 }
 
+/* The quote is also the way back to the passage, for the thread that has one.
+   A button rather than a click handler on the blockquote so that it can be
+   reached from the keyboard, reset back to the quotation it was: the global
+   button rule would otherwise paint an accent-coloured block in the middle of
+   the card. */
+.thread button.quote {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 0;
+  border-left: 3px solid var(--anchor-edge);
+  border-radius: 0;
+  padding: 0 0 0 0.6rem;
+  cursor: pointer;
+}
+
+/* The same yellow the passage is drawn in, so the thing hovered and the thing
+   it leads to are recognisably one. */
+.thread button.quote:hover {
+  filter: none;
+  background: var(--anchor);
+  color: var(--ink);
+}
+
 /* The wait for a turn to come back. The dots are all present in the DOM and
    the animation only clips how many are shown, so the row never changes width
    and nothing below it moves while the model works. */

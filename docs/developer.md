@@ -249,6 +249,19 @@ from a passage to the conversation about it all work already. `Thread.Origin`
 says whose it is; there is no fifth status, because `open` already means
 somebody owes something and who is a reading of who spoke last.
 
+**The quote leads back to the passage.** One direction was already there: click
+a highlight and the column goes to the conversation about it. The other
+direction is what a machine review needs. A comment the reviewer wrote they can
+place from the words alone — they selected them a minute ago; one a review
+raised quotes a passage they have never seen, in a file long enough that hunting
+for the sentence is the work the pass was supposed to save. So the quotation at
+the top of a thread is a button: it takes the document to the highlight, landing
+it a third of the way down rather than against the top edge, because a sentence
+with nothing above it is a sentence out of its context. It moves only when the
+passage is off screen — a highlight already in front of the reader is not a
+request to scroll. A passage that has been edited away keeps its quotation and
+loses its button, there being nowhere to go.
+
 **It works a section at a time.** A model asked to review a whole file returns
 about five comments whether the file is three hundred words or five thousand,
 so the daemon walks the document's heading sections and spends a turn on each.

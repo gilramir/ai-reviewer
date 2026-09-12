@@ -311,51 +311,51 @@ splittingARun =
             [ U.test "a range wholly inside the run" <| \_ ->
                 expect
                     (Expect.equal
-                        [ { text = "ab", thread = Nothing, changed = False }
-                        , { text = "cde", thread = Just "t1", changed = False }
-                        , { text = "fg", thread = Nothing, changed = False }
+                        [ { start = 0, text = "ab", thread = Nothing, changed = False }
+                        , { start = 2, text = "cde", thread = Just "t1", changed = False }
+                        , { start = 5, text = "fg", thread = Nothing, changed = False }
                         ]
                         (Marks.split [ { start = 2, end = 5, thread = "t1" } ] [] 0 "abcdefg")
                     )
             , U.test "a range that began in an earlier run" <| \_ ->
                 expect
                     (Expect.equal
-                        [ { text = "ab", thread = Just "t1", changed = False }, { text = "cdefg", thread = Nothing, changed = False } ]
+                        [ { start = 10, text = "ab", thread = Just "t1", changed = False }, { start = 12, text = "cdefg", thread = Nothing, changed = False } ]
                         (Marks.split [ { start = 0, end = 12, thread = "t1" } ] [] 10 "abcdefg")
                     )
             , U.test "a range that continues into a later run" <| \_ ->
                 expect
                     (Expect.equal
-                        [ { text = "ab", thread = Nothing, changed = False }, { text = "cdefg", thread = Just "t1", changed = False } ]
+                        [ { start = 10, text = "ab", thread = Nothing, changed = False }, { start = 12, text = "cdefg", thread = Just "t1", changed = False } ]
                         (Marks.split [ { start = 12, end = 40, thread = "t1" } ] [] 10 "abcdefg")
                     )
             , U.test "a range that swallows the run whole" <| \_ ->
                 expect
                     (Expect.equal
-                        [ { text = "abcdefg", thread = Just "t1", changed = False } ]
+                        [ { start = 10, text = "abcdefg", thread = Just "t1", changed = False } ]
                         (Marks.split [ { start = 0, end = 100, thread = "t1" } ] [] 10 "abcdefg")
                     )
             , U.test "a run no range touches" <| \_ ->
                 expect
                     (Expect.equal
-                        [ { text = "abcdefg", thread = Nothing, changed = False } ]
+                        [ { start = 10, text = "abcdefg", thread = Nothing, changed = False } ]
                         (Marks.split [ { start = 50, end = 60, thread = "t1" } ] [] 10 "abcdefg")
                     )
             , U.test "two ranges in one run" <| \_ ->
                 expect
                     (Expect.equal
-                        [ { text = "a", thread = Nothing, changed = False }
-                        , { text = "b", thread = Just "t1", changed = False }
-                        , { text = "cd", thread = Nothing, changed = False }
-                        , { text = "ef", thread = Just "t2", changed = False }
-                        , { text = "g", thread = Nothing, changed = False }
+                        [ { start = 0, text = "a", thread = Nothing, changed = False }
+                        , { start = 1, text = "b", thread = Just "t1", changed = False }
+                        , { start = 2, text = "cd", thread = Nothing, changed = False }
+                        , { start = 4, text = "ef", thread = Just "t2", changed = False }
+                        , { start = 6, text = "g", thread = Nothing, changed = False }
                         ]
                         (Marks.split [ { start = 1, end = 2, thread = "t1" }, { start = 4, end = 6, thread = "t2" } ] [] 0 "abcdefg")
                     )
             , U.test "a range that ends exactly where the run begins touches nothing" <| \_ ->
                 expect
                     (Expect.equal
-                        [ { text = "abcdefg", thread = Nothing, changed = False } ]
+                        [ { start = 10, text = "abcdefg", thread = Nothing, changed = False } ]
                         (Marks.split [ { start = 5, end = 10, thread = "t1" } ] [] 10 "abcdefg")
                     )
             , U.test "an empty run yields no pieces" <| \_ ->
@@ -363,7 +363,7 @@ splittingARun =
             , U.test "no ranges at all leaves the run whole" <| \_ ->
                 expect
                     (Expect.equal
-                        [ { text = "abcdefg", thread = Nothing, changed = False } ]
+                        [ { start = 10, text = "abcdefg", thread = Nothing, changed = False } ]
                         (Marks.split [] [] 10 "abcdefg")
                     )
             , U.test "the pieces of a run always rebuild it" <| \_ ->
@@ -398,10 +398,10 @@ overlappingComments =
                 -- entirely.
                 expect
                     (Expect.equal
-                        [ { text = "ab", thread = Just "outer", changed = False }
-                        , { text = "cd", thread = Just "inner", changed = False }
-                        , { text = "ef", thread = Just "outer", changed = False }
-                        , { text = "g", thread = Nothing, changed = False }
+                        [ { start = 0, text = "ab", thread = Just "outer", changed = False }
+                        , { start = 2, text = "cd", thread = Just "inner", changed = False }
+                        , { start = 4, text = "ef", thread = Just "outer", changed = False }
+                        , { start = 6, text = "g", thread = Nothing, changed = False }
                         ]
                         (Marks.split
                             [ { start = 0, end = 6, thread = "outer" }
@@ -415,8 +415,8 @@ overlappingComments =
             , U.test "a later comment does not hide an earlier one of the same width" <| \_ ->
                 expect
                     (Expect.equal
-                        [ { text = "ab", thread = Just "first", changed = False }
-                        , { text = "cdefg", thread = Nothing, changed = False }
+                        [ { start = 0, text = "ab", thread = Just "first", changed = False }
+                        , { start = 2, text = "cdefg", thread = Nothing, changed = False }
                         ]
                         (Marks.split
                             [ { start = 0, end = 2, thread = "first" }
@@ -448,18 +448,18 @@ twoHighlightsAtOnce =
             [ U.test "a change with no comment on it" <| \_ ->
                 expect
                     (Expect.equal
-                        [ { text = "ab", thread = Nothing, changed = False }
-                        , { text = "cde", thread = Nothing, changed = True }
-                        , { text = "fg", thread = Nothing, changed = False }
+                        [ { start = 0, text = "ab", thread = Nothing, changed = False }
+                        , { start = 2, text = "cde", thread = Nothing, changed = True }
+                        , { start = 5, text = "fg", thread = Nothing, changed = False }
                         ]
                         (Marks.split [] [ { start = 2, end = 5 } ] 0 "abcdefg")
                     )
             , U.test "a passage that was both commented on and changed" <| \_ ->
                 expect
                     (Expect.equal
-                        [ { text = "ab", thread = Nothing, changed = False }
-                        , { text = "cde", thread = Just "t1", changed = True }
-                        , { text = "fg", thread = Nothing, changed = False }
+                        [ { start = 0, text = "ab", thread = Nothing, changed = False }
+                        , { start = 2, text = "cde", thread = Just "t1", changed = True }
+                        , { start = 5, text = "fg", thread = Nothing, changed = False }
                         ]
                         (Marks.split
                             [ { start = 2, end = 5, thread = "t1" } ]
@@ -473,11 +473,11 @@ twoHighlightsAtOnce =
                 -- of them together, the change alone, and what neither covers.
                 expect
                     (Expect.equal
-                        [ { text = "a", thread = Nothing, changed = False }
-                        , { text = "b", thread = Just "t1", changed = False }
-                        , { text = "cd", thread = Just "t1", changed = True }
-                        , { text = "ef", thread = Nothing, changed = True }
-                        , { text = "g", thread = Nothing, changed = False }
+                        [ { start = 0, text = "a", thread = Nothing, changed = False }
+                        , { start = 1, text = "b", thread = Just "t1", changed = False }
+                        , { start = 2, text = "cd", thread = Just "t1", changed = True }
+                        , { start = 4, text = "ef", thread = Nothing, changed = True }
+                        , { start = 6, text = "g", thread = Nothing, changed = False }
                         ]
                         (Marks.split
                             [ { start = 1, end = 4, thread = "t1" } ]
@@ -489,8 +489,8 @@ twoHighlightsAtOnce =
             , U.test "a change that began in an earlier run" <| \_ ->
                 expect
                     (Expect.equal
-                        [ { text = "ab", thread = Nothing, changed = True }
-                        , { text = "cdefg", thread = Nothing, changed = False }
+                        [ { start = 10, text = "ab", thread = Nothing, changed = True }
+                        , { start = 12, text = "cdefg", thread = Nothing, changed = False }
                         ]
                         (Marks.split [] [ { start = 4, end = 12 } ] 10 "abcdefg")
                     )

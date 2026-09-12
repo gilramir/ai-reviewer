@@ -235,6 +235,7 @@ type Msg
     | ThemePicked String
     | ChangesShown Bool
     | FocusThread String
+    | FocusPassage String
     | ThreadScrolled
     | DocScrolled
     | DismissError
@@ -567,12 +568,19 @@ update msg model =
             -- ask for the conversation about it.
             { model = model, command = showEndOfThread threadId }
 
+        FocusPassage threadId ->
+            -- The other way round: the reviewer pointed at a thread, and what
+            -- they are asking is where in the document it is about. A comment
+            -- they wrote themselves they can place from the words alone; one a
+            -- review raised quotes a passage they have never seen.
+            { model = model, command = showPassage threadId }
+
         ThreadScrolled ->
             -- Nothing to do; the scroll either happened or the thread was gone.
             stay model
 
         DocScrolled ->
-            -- Nothing to do; the pane is at the top, or there was no pane.
+            -- Nothing to do; the pane moved, or there was nothing to move it to.
             stay model
 
         DismissError ->
@@ -941,6 +949,57 @@ threadsPaneId =
 threadElementId : String -> String
 threadElementId threadId =
     "thread-" ++ threadId
+
+
+{-| Scroll the document pane to the passage a thread is anchored to.
+
+Only when the passage is not on the page already: a highlight in front of the
+reader is not a request to move the document, and moving it anyway costs them
+the line they were on. When it does move, the passage lands a third of the way
+down rather than against the top edge, because a sentence with nothing above it
+is a sentence out of its context -- and the paragraph it belongs to is usually
+the reason the comment is there.
+
+-}
+showPassage : String -> Cmd Msg
+showPassage threadId =
+    Dom.getElement (markElementId threadId)
+        |> Task.andThen
+            (\mark ->
+                Dom.getElement docPaneId
+                    |> Task.andThen
+                        (\pane ->
+                            Dom.getViewportOf docPaneId
+                                |> Task.andThen
+                                    (\scrolled ->
+                                        let
+                                            -- The passage's top and bottom
+                                            -- measured from the top of
+                                            -- everything the pane can scroll
+                                            -- through.
+                                            top =
+                                                scrolled.viewport.y + mark.element.y - pane.element.y
+
+                                            bottom =
+                                                top + mark.element.height
+                                        in
+                                        if top >= scrolled.viewport.y && bottom <= scrolled.viewport.y + scrolled.viewport.height then
+                                            Task.succeed {}
+
+                                        else
+                                            Dom.setViewportOf docPaneId 0 (max 0 (top - scrolled.viewport.height / 3))
+                                    )
+                        )
+            )
+        |> Task.attempt (\_ -> DocScrolled)
+
+
+{-| The id of the mark a thread's passage starts at. Only its first mark carries
+one: a quote that crosses a link or a soft wrap is drawn as several.
+-}
+markElementId : String -> String
+markElementId threadId =
+    "mark-" ++ threadId
 
 
 {-| Whether a render that has arrived is of the document already on screen.
@@ -2381,7 +2440,7 @@ it, and report where the walk has reached.
 -}
 markUp : Marking -> Int -> String -> { html : Array (Html Msg), next : Int }
 markUp over base text =
-    { html = Array.map viewPiece (Marks.split over.marks over.changes base text)
+    { html = Array.map (viewPiece over.marks) (Marks.split over.marks over.changes base text)
     , next = base + String.count text
     }
 
@@ -2393,21 +2452,35 @@ it has also changed: the change is shown under it as a line instead, so a
 sentence that is both does not have to choose which it is.
 
 -}
-viewPiece : Marks.Piece -> Html Msg
-viewPiece piece =
+viewPiece : Array Range -> Marks.Piece -> Html Msg
+viewPiece marks piece =
     when piece.thread is
         Just threadId ->
-            Html.node "mark"
-                [ Attr.class
-                    (if piece.changed then
-                        "anchored changed"
+            let
+                -- The thread's quote points back here, and a passage broken
+                -- across a link or a soft wrap is several marks. The id goes on
+                -- the one the passage starts at, which is the place to arrive.
+                named =
+                    if Array.any (\range -> range.thread == threadId && range.start == piece.start) marks then
+                        [ Attr.id (markElementId threadId) ]
 
-                     else
-                        "anchored"
-                    )
-                , Attr.title "Go to this thread"
-                , Events.onClick (FocusThread threadId)
-                ]
+                    else
+                        []
+            in
+            Html.node "mark"
+                (Array.append
+                    [ Attr.class
+                        (if piece.changed then
+                            "anchored changed"
+
+                         else
+                            "anchored"
+                        )
+                    , Attr.title "Go to this thread"
+                    , Events.onClick (FocusThread threadId)
+                    ]
+                    named
+                )
                 [ Html.text piece.text ]
 
         Nothing ->
@@ -2494,23 +2567,50 @@ viewSidebar model =
             ]
 
          else
-            Array.map (viewThread model.replyDrafts) model.threads
+            Array.map (viewThread model.marks model.replyDrafts) model.threads
         )
 
 
-viewThread : Dict String String -> Thread -> Html Msg
-viewThread drafts thread =
+viewThread : Array Range -> Dict String String -> Thread -> Html Msg
+viewThread marks drafts thread =
     Html.section
         [ Attr.class (String.join " " [ "thread", statusClass thread.status, originClass thread ])
         , Attr.id (threadElementId thread.id)
         , Attr.attribute "data-thread-id" thread.id
         ]
         [ viewRaisedBy thread
-        , Html.blockquote [ Attr.class "quote" ] [ Html.text thread.anchor.quote ]
+        , viewQuote (Array.any (\range -> range.thread == thread.id) marks) thread
         , Html.div [ Attr.class "messages" ] (Array.map viewMessage thread.messages)
         , viewCommitLink thread.commit
         , viewThreadActions drafts thread
         ]
+
+
+{-| The passage a thread is about, and the way back to it.
+
+A comment the reviewer wrote themselves they can place from the words alone --
+they selected them a minute ago. One a review raised quotes a passage they have
+never seen, in a document long enough that reading it to find the sentence is
+the work the comment was supposed to save. So the quote is the button: clicking
+it takes the document to the words.
+
+Only while there are words to take it to. A passage edited away is still worth
+showing -- it is what the conversation was about -- but there is nothing to
+point at, and a button that does nothing is worse than a quotation.
+
+-}
+viewQuote : Bool -> Thread -> Html Msg
+viewQuote anchored thread =
+    if anchored then
+        Html.button
+            [ Attr.class "quote"
+            , Attr.title "Show this passage in the document"
+            , Events.onClick (FocusPassage thread.id)
+            ]
+            [ Html.text thread.anchor.quote ]
+
+    else
+        Html.blockquote [ Attr.class "quote" ] [ Html.text thread.anchor.quote ]
 
 
 {-| A thread the reviewer did not open says so, and says what it was asked to

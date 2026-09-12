@@ -84,9 +84,15 @@ the passages that changed.
 The two are independent: a sentence can be commented on, changed, both, or
 neither, and the reader has to be able to tell which.
 
+`start` is where the piece begins in the document text. It is what lets the
+caller tell the first piece of a passage from the rest of it: a quote that
+crosses a link or a soft wrap is drawn as several marks, and only one of them
+can be the place the document scrolls to.
+
 -}
 type alias Piece =
-    { text : String
+    { start : Int
+    , text : String
     , thread : Maybe String
     , changed : Bool
     }
@@ -330,7 +336,8 @@ split ranges changes base text =
                         { at = edge
                         , pieces =
                             Array.pushLast
-                                { text = cut base acc.at edge text
+                                { start = acc.at
+                                , text = cut base acc.at edge text
                                 , thread = threadAt ranges acc.at
                                 , changed = isChangedAt changes acc.at
                                 }
