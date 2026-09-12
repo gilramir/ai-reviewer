@@ -44,6 +44,24 @@ type busyFrame struct {
 	Busy bool   `json:"busy"`
 }
 
+// passProgress is how far a reviewing pass has got. It is a frame of its own
+// rather than a flag on busy, because "thinking" and "on section 3 of 9" are
+// different things to be told: one is a spinner and the other is a reason to
+// wait.
+type passProgress struct {
+	Active  bool   `json:"active"`
+	Section int    `json:"section,omitempty"`
+	Total   int    `json:"total,omitempty"`
+	Title   string `json:"title,omitempty"`
+	Brief   string `json:"brief,omitempty"`
+}
+
+type passFrame struct {
+	Type string `json:"type"`
+	Doc  string `json:"doc"`
+	passProgress
+}
+
 type docListFrame struct {
 	Type string   `json:"type"`
 	Docs []string `json:"docs"`
@@ -175,6 +193,12 @@ func (r *Review) PublishSettings() {
 // reviewer can change it themselves.
 func (r *Review) PublishEditSource(docPath, quote, text string) {
 	r.publish(editSourceFrame{Type: "editSource", Doc: docPath, Quote: quote, Text: text})
+}
+
+// publishPass reports where a reviewing pass has got to. A zero progress is the
+// pass being over, which is what takes the notice off the screen.
+func (r *Review) publishPass(docPath string, at passProgress) {
+	r.publish(passFrame{Type: "pass", Doc: docPath, passProgress: at})
 }
 
 // PublishError surfaces a message in the browser.

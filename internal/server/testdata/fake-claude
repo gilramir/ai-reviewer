@@ -7,8 +7,10 @@ in the loop. It reads user frames from stdin for as long as stdin stays open,
 exactly as the real CLI does.
 
 Behaviour: a comment containing "reword" rewrites the quoted passage in the
-named file and reports an Edit tool call. Anything else is answered with prose
-and touches nothing.
+named file and reports an Edit tool call. A reviewing pass -- recognised by the
+section it is handed -- answers with the fenced JSON array of proposals the
+critic prompt asks for. Anything else is answered with prose and touches
+nothing.
 """
 import json
 import os
@@ -31,16 +33,56 @@ def parse_prompt(text):
         path = match.group(1).strip()
 
     quote = None
-    match = re.search(r"selected this passage:\n\n((?:> .*\n)+)", text)
+    # Both phrasings: a reviewer's own comment names the passage they selected,
+    # and a machine thread handed to the editing conversation names the passage
+    # a pass raised.
+    match = re.search(
+        r"(?:selected this passage|raised a comment on this passage):\n\n((?:> .*\n)+)",
+        text)
     if match:
         quote = "\n".join(line[2:] for line in match.group(1).strip().split("\n"))
 
     return path, quote
 
 
+def parse_section(text):
+    """Pull the section text out of a reviewing pass's prompt."""
+    match = re.search(r"as the reader sees it:\n\n((?:>.*\n)+)", text)
+    if not match:
+        return None
+    lines = match.group(1).rstrip("\n").split("\n")
+    return "\n".join(line[2:] for line in lines)
+
+
+def review_reply(section):
+    """Answer a reviewing pass.
+
+    One proposal quoting the longest line of the section, which must anchor,
+    and one quoting text that is nowhere in the document, which must not. The
+    daemon's gate is the whole point of the feature, so the stub exercises
+    both sides of it on every section.
+    """
+    quotable = max(section.split("\n"), key=len).strip()
+    proposals = [
+        {"quote": quotable, "comment": "The fake reviewer has doubts about this."},
+        {"quote": "a passage that appears nowhere in any document under review",
+         "comment": "This one cannot be anchored and must be dropped."},
+    ]
+    return "Here is what I found.\n\n```json\n" + json.dumps(proposals, indent=2) + "\n```\n"
+
+
 def handle(text):
     emit({"type": "system", "subtype": "init", "session_id": SESSION,
           "tools": ["Read", "Edit", "Write", "Grep", "Glob"], "mcp_servers": []})
+
+    section = parse_section(text)
+    if section is not None:
+        reply = review_reply(section)
+        emit({"type": "assistant", "session_id": SESSION, "message": {
+            "role": "assistant", "content": [{"type": "text", "text": reply}]}})
+        emit({"type": "result", "subtype": "success", "session_id": SESSION,
+              "result": reply, "is_error": False, "total_cost_usd": 0.01})
+        return
 
     path, quote = parse_prompt(text)
     edited = False

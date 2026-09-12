@@ -59,6 +59,16 @@ type Review struct {
 	base  string
 	hist  gitstore.History
 	procs *claudeproc.Manager
+	// critics is the second process pool: the one that reads a document and
+	// raises comments rather than answering them.
+	//
+	// A second Manager rather than a second session, because the system prompt
+	// lives on the Manager and the two prompts contradict each other -- the
+	// editing one says to make the change with the Edit tool, and a reviewer
+	// that quietly fixes what it found has destroyed the review. The critic is
+	// launched without Edit or Write at all, so the line is held at the process
+	// boundary instead of in a paragraph the model is asked to respect.
+	critics *claudeproc.Manager
 
 	// pending counts the exchanges in flight, so a shutdown can wait for them
 	// rather than leaving one writing state into a directory that is going
@@ -74,10 +84,14 @@ type Review struct {
 	sessions map[string]string   // document path -> Claude session id
 	inflight map[string]int      // document path -> turns running
 	threads  map[string]*Thread  // thread id -> thread
-	order    []string            // thread ids, oldest first
-	subs     map[int]chan []byte // subscriber id -> outbound frames
-	nextSub  int
-	notices  []string // things the reviewer must be told about this review
+	// passes is the reviewing pass running on a document, by the handle that
+	// stops it. One at a time: a second pass would be reading the same sections
+	// and racing the first to file comments on them.
+	passes  map[string]context.CancelFunc
+	order   []string            // thread ids, oldest first
+	subs    map[int]chan []byte // subscriber id -> outbound frames
+	nextSub int
+	notices []string // things the reviewer must be told about this review
 	// foreign is what the state file says about documents outside this
 	// review's root. The file belongs to the workspace now, so a review rooted
 	// at doc/ opens one that may also hold the threads of a review rooted at
@@ -146,8 +160,26 @@ func New(opts Options) (*Review, error) {
 		sessions: map[string]string{},
 		inflight: map[string]int{},
 		threads:  map[string]*Thread{},
+		passes:   map[string]context.CancelFunc{},
 		subs:     map[int]chan []byte{},
 	}
+
+	r.critics = claudeproc.NewManager(
+		claudeproc.Config{
+			Binary:       opts.ClaudeBinary,
+			WorkDir:      hist.Root(),
+			Model:        opts.Model,
+			SystemPrompt: criticSystemPrompt,
+			// No Edit and no Write. A pass that can change the document is not
+			// a review of it.
+			AllowedTools: []string{"Read", "Grep", "Glob"},
+			MaxBudgetUSD: opts.MaxBudgetUSD,
+		},
+		claudeproc.ManagerOptions{
+			MaxLive:     opts.MaxLive,
+			IdleTimeout: opts.IdleTimeout,
+		},
+	)
 
 	r.cliVersion = claudeVersion(opts.ClaudeBinary)
 
@@ -160,6 +192,7 @@ func New(opts Options) (*Review, error) {
 	// on this run's command line is the more recent decision and wins.
 	if opts.Model == "" && state.Model != "" {
 		r.procs.SetModel(state.Model)
+		r.critics.SetModel(state.Model)
 	}
 
 	// A restart finds the tree already on the review branch, which says nothing
@@ -180,7 +213,9 @@ func New(opts Options) (*Review, error) {
 // long as recording that takes. The wait is bounded anyway, since no shutdown
 // should hang on a turn that will not end.
 func (r *Review) Close() error {
+	r.stopPasses()
 	r.procs.Close()
+	r.critics.Close()
 	r.waitForTurns(5 * time.Second)
 	return r.save()
 }
@@ -388,6 +423,7 @@ func (r *Review) Comment(docPath string, anchor Anchor, body string) (*Thread, e
 		Doc:      docPath,
 		Anchor:   anchor,
 		Status:   StatusThinking,
+		Origin:   OriginReviewer,
 		Messages: []Message{{Role: RoleUser, Text: body}},
 		Created:  time.Now().UTC(),
 	}
@@ -419,8 +455,14 @@ func (r *Review) Reply(threadID, body string) error {
 	}
 	docPath := thread.Doc
 	anchor := thread.Anchor
+	// The comment a pass raised, which the editing conversation has not seen.
+	raised := ""
+	if thread.Origin == OriginModel && !thread.HandedOff && len(thread.Messages) > 0 {
+		raised = thread.Messages[0].Text
+	}
 	thread.Messages = append(thread.Messages, Message{Role: RoleUser, Text: body})
 	thread.Status = StatusThinking
+	thread.HandedOff = true
 	// A reply normally leans on the conversation to know which passage it is
 	// about. With no session there is no conversation to lean on -- the context
 	// was cleared -- so the passage has to be said again.
@@ -428,7 +470,14 @@ func (r *Review) Reply(threadID, body string) error {
 	r.mu.Unlock()
 
 	prompt := replyPrompt(body)
-	if !remembers {
+	switch {
+	case raised != "":
+		// A machine thread was raised in the critic's conversation, which has
+		// no Edit tool and is gone by now anyway. "Yes, fix that" has to land
+		// where the editing happens, and that process has never heard of any of
+		// this -- so the first reply on such a thread introduces it.
+		prompt = r.handoff(docPath, anchor, raised, body)
+	case !remembers:
 		prompt = r.reopenPrompt(docPath, anchor, body)
 	}
 
@@ -454,6 +503,22 @@ func (r *Review) reopenPrompt(docPath string, anchor Anchor, body string) string
 	return commentPrompt(r.workspacePath(docPath), anchor.Quote, blockAround(string(src), at), body)
 }
 
+// handoff states a machine thread to the editing conversation from scratch: the
+// passage, the comment the pass raised, and what the reviewer said back. It
+// falls back to naming just the passage when the comment cannot be placed,
+// which is no worse than what a cleared context gets.
+func (r *Review) handoff(docPath string, anchor Anchor, raised, body string) string {
+	src, err := r.read(docPath)
+	if err != nil {
+		return replyPrompt(body)
+	}
+	at, ok := Locate(string(src), anchor)
+	if !ok {
+		return replyPrompt(body)
+	}
+	return handoffPrompt(r.workspacePath(docPath), anchor.Quote, blockAround(string(src), at), raised, body)
+}
+
 // Resolve closes a thread without further comment.
 func (r *Review) Resolve(threadID string) error {
 	r.mu.Lock()
@@ -470,15 +535,37 @@ func (r *Review) Resolve(threadID string) error {
 	return r.save()
 }
 
-// Interrupt stops the turn running against a document.
+// Interrupt stops whatever is running against a document: the turn answering a
+// comment, the pass raising them, or both. One button on screen, because the
+// reviewer pressing it means stop, not stop one of the two things.
 func (r *Review) Interrupt(docPath string) {
 	r.mu.Lock()
 	sessionID := r.sessions[docPath]
+	cancel := r.passes[docPath]
 	r.mu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
 	if sessionID == "" {
 		return
 	}
 	r.procs.Session(docPath, sessionID).Interrupt()
+}
+
+// stopPasses cancels every pass in flight, so a shutdown waits only for the
+// turn each one is in the middle of rather than for the sections after it.
+func (r *Review) stopPasses() {
+	r.mu.Lock()
+	cancels := make([]context.CancelFunc, 0, len(r.passes))
+	for _, cancel := range r.passes {
+		cancels = append(cancels, cancel)
+	}
+	r.mu.Unlock()
+
+	for _, cancel := range cancels {
+		cancel()
+	}
 }
 
 // blockAround extracts the paragraph-sized neighbourhood of a location, giving
@@ -798,6 +885,10 @@ func (r *Review) load() (persisted, error) {
 		// A turn cannot survive a restart; anything mid-flight is reopened.
 		if t.Status == StatusThinking {
 			t.Status = StatusOpen
+		}
+		// Written before machine review existed, which makes it a reviewer's.
+		if t.Origin == "" {
+			t.Origin = OriginReviewer
 		}
 		r.threads[t.ID] = t
 		r.order = append(r.order, t.ID)

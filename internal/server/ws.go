@@ -21,6 +21,9 @@ type clientFrame struct {
 	Body     string        `json:"body"`
 	ThreadID string        `json:"threadId"`
 	Model    string        `json:"model"`
+	// Brief is what a reviewing pass should look for. Empty takes the standing
+	// one from .ai-reviewer/review.md.
+	Brief string `json:"brief"`
 	// Original and Replacement carry a hand edit: the source the reviewer
 	// started from, and what they want in its place.
 	Original    string `json:"original"`
@@ -124,6 +127,11 @@ func (s *Server) dispatch(frame clientFrame) {
 
 	case "resolve":
 		if err := rev.Resolve(frame.ThreadID); err != nil {
+			rev.PublishError(err.Error())
+		}
+
+	case "review":
+		if err := rev.StartPass(frame.Doc, frame.Brief); err != nil {
 			rev.PublishError(err.Error())
 		}
 

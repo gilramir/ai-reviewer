@@ -31,6 +31,15 @@ type Settings struct {
 
 	Tools          []string `json:"tools"`
 	PermissionMode string   `json:"permissionMode"`
+	// CriticTools is what a reviewing pass runs with, which is the same list
+	// minus the ones that could change the document. It is shown because "it
+	// cannot edit" is the claim the whole feature rests on, and a reviewer is
+	// entitled to check it rather than take it.
+	CriticTools []string `json:"criticTools"`
+	// Brief is what a pass looks for when the reviewer does not say. It is read
+	// from .ai-reviewer/review.md on demand, like every other field here: the
+	// file is the owner, and this is a reading of it.
+	Brief string `json:"brief"`
 
 	// Workspace is where Claude runs; ReviewRoot is what the browser may open.
 	// They differ whenever a review is rooted inside a repository.
@@ -116,13 +125,15 @@ func (r *Review) Settings() Settings {
 		RunningModel:   running,
 		ModelChoices:   choices,
 		Tools:          cfg.AllowedTools,
+		CriticTools:    r.critics.Config().AllowedTools,
+		Brief:          r.Brief(),
 		PermissionMode: claudeproc.PermissionMode,
 		Workspace:      r.work,
 		ReviewRoot:     r.root,
 		Branch:         r.branch,
 		MaxBudgetUSD:   cfg.MaxBudgetUSD,
 		SpentUSD:       spent,
-		Live:           r.procs.Live(),
+		Live:           r.procs.Live() + r.critics.Live(),
 		Conversations:  conversations,
 		CLIPath:        cfg.Binary,
 		CLIVersion:     r.cliVersion,
@@ -181,6 +192,7 @@ func (r *Review) SetModel(model string) error {
 	}
 
 	r.procs.SetModel(model)
+	r.critics.SetModel(model)
 
 	// The old value described a model that is no longer in use, and the new one
 	// is not confirmed until a turn reports it.

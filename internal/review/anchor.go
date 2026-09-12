@@ -193,3 +193,92 @@ func commonSuffix(a, b string) int {
 	}
 	return n
 }
+
+// contextWindow is how much text either side of a quote is kept to tell
+// repeated occurrences apart. It matches what the browser records for a
+// reviewer's own selection, so both kinds of anchor are scored on the same
+// amount of evidence.
+const contextWindow = 48
+
+// AnchorIn builds an anchor for a quote inside one section of a document.
+//
+// A reviewer's anchor arrives with its surroundings already attached, because
+// the browser took them from the selection. A model's quote arrives bare, and a
+// bare quote is not an anchor: "the reviewer" occurs a dozen times in a document
+// about reviewing, and the thread has to say which one. So the context is read
+// off wherever the quote was found. That also means the two halves of the system
+// choose between repeated occurrences on the same evidence afterwards, which a
+// quote carrying no context leaves them free to do differently.
+//
+// The search is confined to the section the model was shown. A quote it took
+// from the text in front of it must be found there and not in some other part
+// of the document that happens to say the same thing.
+//
+// The Location returned is in rendered-text coordinates, not the source
+// coordinates Locate reports. It is for comparing one proposal against another
+// within a pass, and nothing durable is keyed to it. Call Locate for an answer
+// about the file.
+func AnchorIn(rendered mdast.Rendered, section mdast.Section, quote string) (Anchor, Location, bool) {
+	trimmed := strings.TrimSpace(quote)
+	if trimmed == "" {
+		return Anchor{}, Location{}, false
+	}
+
+	at, ok := firstIn(rendered.Text, trimmed, section.Start, section.End)
+	if !ok {
+		return Anchor{}, Location{}, false
+	}
+
+	return Anchor{
+		Quote:  rendered.Text[at.Start:at.End],
+		Prefix: tailRunes(rendered.Text[:at.Start], contextWindow),
+		Suffix: headRunes(rendered.Text[at.End:], contextWindow),
+	}, at, true
+}
+
+// firstIn is findAll bounded to one stretch of the text, reporting the first
+// match that begins inside it. A match may run past the end: a quote taken from
+// the last line of a section is still that section's.
+func firstIn(text, quote string, from, to int) (Location, bool) {
+	if from < 0 {
+		from = 0
+	}
+	if to > len(text) {
+		to = len(text)
+	}
+	for i := from; i < to; i++ {
+		if end, ok := matchAt(text, quote, i); ok {
+			return Location{Start: i, End: end}, true
+		}
+	}
+	return Location{}, false
+}
+
+// headRunes and tailRunes cut on rune boundaries. The context is compared
+// letter by letter after normalising, so a half-written rune at the edge would
+// not change an answer -- but it would travel the wire and land in a state file,
+// and neither of those is a place to keep broken UTF-8.
+func headRunes(s string, n int) string {
+	count := 0
+	for i := range s {
+		if count == n {
+			return s[:i]
+		}
+		count++
+	}
+	return s
+}
+
+func tailRunes(s string, n int) string {
+	starts := make([]int, 0, n+1)
+	for i := range s {
+		starts = append(starts, i)
+		if len(starts) > n {
+			starts = starts[1:]
+		}
+	}
+	if len(starts) == 0 {
+		return ""
+	}
+	return s[starts[0]:]
+}
