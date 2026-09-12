@@ -216,7 +216,7 @@ html, body {
 /* Tall enough that the brief it ships with fits without scrolling. A brief
    the reviewer cannot read all of is one they will not edit, and editing it is
    the whole reason this box opens prefilled. */
-.briefing textarea { width: 100%; min-height: 7rem; resize: vertical; }
+.briefing textarea { width: 100%; min-height: 9.5rem; resize: vertical; }
 .briefing .actions { display: flex; gap: 0.4rem; margin-top: 0.5rem; }
 
 /* The presets fill the box rather than replace it, so they are laid out as
