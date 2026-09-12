@@ -5,9 +5,15 @@ and argued with before any code moved; it is left in the tense it was written in
 rather than rewritten into a description. [developer.md](developer.md#the-machine-reviewer)
 says what the thing does now.
 
-One part is deliberately still undone: the proposal tool. Comments are parsed
-out of a fenced JSON array, which is the cheap version this argues against, and
-the reasons it gives for replacing it have not changed.
+The proposal tool is still undone, but the argument for it turned out to be
+separable from the tool. What made it worth building was the round trip -- a
+misquote told it is wrong while the model can still fix it -- and that fits in
+one extra turn of the conversation the section is already in. A repair round
+does it in forty lines, with no server, no token and no transport. Read the
+section below with that in mind: it argues for a feedback loop, and gets one.
+What the tool would still add is streaming and per-call validation, and whether
+those are worth an HTTP listener is now a question the dropped count can
+answer.
 
 Today the human reviews and the model works: the reviewer selects a passage,
 comments on it, and the daemon reports what the model did about it. This
@@ -139,6 +145,14 @@ The cost is an MCP server over stdio, which is new machinery in `claudeproc`.
 Asking for a fenced JSON block and parsing the final text is a reasonable first
 version, as long as it is understood as one: the anchoring failure mode is the
 thing the design is *for*, and the cheap version has no answer to it.
+
+*Built, and this is the paragraph that was wrong.* The cheap version has no
+answer to it; a second turn does. The pass parses the array, gates it, and asks
+again about whatever it could not place -- naming, for each one, the longest
+piece that did match and what the text actually says from there. The failure in
+practice is a word changed on the way out, not an invented passage, and a model
+shown the divergence fixes it in one line. The count that survives a second look
+is what says whether the tool is worth building after all.
 
 ## The critic is a second process, and the code already insists
 

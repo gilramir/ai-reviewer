@@ -143,7 +143,7 @@ func (r *Review) runPass(ctx context.Context, docPath, brief string, rendered md
 	defer r.critics.Forget(sessionKey)
 	session := r.critics.Session(sessionKey, passID)
 
-	filed := 0
+	filed, lost := 0, 0
 	for i, section := range sections {
 		if ctx.Err() != nil {
 			break
@@ -157,7 +157,9 @@ func (r *Review) runPass(ctx context.Context, docPath, brief string, rendered md
 			Brief:   brief,
 		})
 
-		n, err := r.reviewSection(ctx, session, docPath, brief, rendered, section)
+		n, missed, err := r.reviewSection(ctx, session, docPath, brief, rendered, section)
+		filed += n
+		lost += missed
 		if err != nil {
 			if ctx.Err() != nil {
 				break
@@ -165,7 +167,15 @@ func (r *Review) runPass(ctx context.Context, docPath, brief string, rendered md
 			r.publish(errorFrame{Type: "error", Message: "review of " + docPath + " stopped: " + err.Error()})
 			break
 		}
-		filed += n
+	}
+
+	// Reported once for the pass rather than once per section: three sections
+	// that each lost one comment is one number the reviewer can act on, and
+	// three notices they will dismiss without reading.
+	if lost > 0 {
+		r.publish(errorFrame{Type: "error", Message: fmt.Sprintf(
+			"%d comment(s) on %s quoted text that is not in the document, and were dropped even after a second look.",
+			lost, docPath)})
 	}
 
 	// A pass that raised nothing has to say so. Silence is what a pass that
@@ -180,9 +190,26 @@ func (r *Review) runPass(ctx context.Context, docPath, brief string, rendered md
 	_ = r.save()
 }
 
-// reviewSection runs one turn and files what survives it, returning how many
-// threads that was.
-func (r *Review) reviewSection(ctx context.Context, session *claudeproc.Session, docPath, brief string, rendered mdast.Rendered, section mdast.Section) (int, error) {
+// reviewSection runs one turn, gives the model a second look at whatever it
+// misquoted, and files what survives. It returns how many threads that was and
+// how many comments were lost.
+//
+// The second look is the point. A comment whose passage cannot be found is
+// thrown away, and a thrown-away comment is indistinguishable from one that was
+// never raised -- so the reviewer never learns the pass had something to say.
+// One extra turn, in the conversation that still has the section in it, turns
+// most of those back into comments: the usual failure is a word, not an
+// invention. "the reviewer has selected" for "the reviewer selected" is a
+// hallucination the model can fix the moment it is shown where it diverged.
+//
+// One round and no more. If the text was not there the second time either, it
+// was never there, and a third ask is the model repeating itself at full price.
+func (r *Review) reviewSection(ctx context.Context, session *claudeproc.Session, docPath, brief string, rendered mdast.Rendered, section mdast.Section) (filed int, lost int, err error) {
+	gate, err := r.newGate(docPath, brief, rendered, section)
+	if err != nil {
+		return 0, 0, err
+	}
+
 	prompt := criticPrompt(
 		r.workspacePath(docPath),
 		brief,
@@ -197,10 +224,239 @@ func (r *Review) reviewSection(ctx context.Context, session *claudeproc.Session,
 	result, err := session.Ask(turn, prompt, nil)
 	r.noteTurnCost(docPath, result.Model, result.CostUSD)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 
-	return r.fileProposals(docPath, brief, rendered, section, parseProposals(result.Text)), nil
+	bad := gate.admitAll(parseProposals(result.Text))
+	lost = len(bad)
+
+	if lost > 0 && ctx.Err() == nil {
+		before := len(gate.kept)
+
+		repaired, askErr := session.Ask(turn, repairPrompt(bad), nil)
+		r.noteTurnCost(docPath, repaired.Model, repaired.CostUSD)
+
+		// Counted as what the gate gained, not as what the second turn sent
+		// back. A repair that comes back misquoted again, and one the model
+		// ignores entirely, are the same outcome -- the comment is gone -- and
+		// measuring the reply rather than the result would score the second as
+		// a success. A failed turn is the same again: the first turn's comments
+		// stand, and the ones that needed a second look are lost.
+		if askErr == nil {
+			gate.admitAll(parseProposals(repaired.Text))
+		}
+		if fixed := len(gate.kept) - before; fixed < lost {
+			lost -= fixed
+		} else {
+			lost = 0
+		}
+	}
+
+	return r.fileVetted(docPath, brief, gate.kept), lost, nil
+}
+
+// vetted is a proposal that passed the gate: the anchor to file it under, and
+// where that sits in the text the model was shown. The Location is in
+// rendered-text coordinates and is only ever compared with another of its own
+// kind -- see AnchorIn.
+type vetted struct {
+	anchor  Anchor
+	comment string
+	at      Location
+}
+
+// rejected is a proposal that did not pass, in the words the model gets back.
+type rejected struct {
+	quote  string
+	reason string
+}
+
+// sectionGate admits proposals for one section.
+//
+// It holds the document twice on purpose, and they are not interchangeable:
+// rendered is what the model was shown and is where a quote has to be found,
+// and current is what is on disk now and is where the resulting anchor has to
+// still work. An editing turn or the reviewer's own hand can have moved the
+// text in between.
+type sectionGate struct {
+	rev      *Review
+	docPath  string
+	brief    string
+	rendered mdast.Rendered
+	section  mdast.Section
+	current  mdast.Rendered
+
+	kept []vetted
+}
+
+func (r *Review) newGate(docPath, brief string, rendered mdast.Rendered, section mdast.Section) (*sectionGate, error) {
+	src, err := r.read(docPath)
+	if err != nil {
+		return nil, err
+	}
+	return &sectionGate{
+		rev:      r,
+		docPath:  docPath,
+		brief:    brief,
+		rendered: rendered,
+		section:  section,
+		current:  mdast.Flatten(src),
+	}, nil
+}
+
+// admitAll runs a batch through the gate and returns what it would not take.
+func (g *sectionGate) admitAll(proposals []proposal) []rejected {
+	var bad []rejected
+	for _, p := range proposals {
+		if why, ok := g.admit(p); !ok {
+			bad = append(bad, why)
+		}
+	}
+	return bad
+}
+
+// admit checks one proposal, keeping it when it passes.
+//
+// A refusal it can do something about comes back as a rejection with a reason;
+// a passage that is simply already being discussed comes back as neither, since
+// asking for that one again is asking it to widen the quote until the check
+// stops noticing.
+func (g *sectionGate) admit(p proposal) (rejected, bool) {
+	comment := strings.TrimSpace(p.Comment)
+	quote := strings.TrimSpace(p.Quote)
+
+	if comment == "" {
+		return rejected{quote: quote, reason: "there was no comment with it."}, false
+	}
+	if len(quote) < quoteFloor {
+		return rejected{quote: quote, reason: fmt.Sprintf(
+			"that is too short to point at one place. Quote a whole phrase -- %d characters at least, a sentence for preference.",
+			quoteFloor)}, false
+	}
+
+	anchor, at, ok := AnchorIn(g.rendered, g.section, quote)
+	if !ok {
+		return rejected{quote: quote, reason: g.missing(quote)}, false
+	}
+	if _, ok := LocateIn(g.current, anchor); !ok {
+		return rejected{quote: quote, reason: "that passage was in the section but is not in the file any more -- it changed while I was reading."}, false
+	}
+
+	if g.rev.overlaps(g.docPath, g.brief, g.rendered, at) || overlapsVetted(g.kept, at) {
+		return rejected{}, true
+	}
+
+	g.kept = append(g.kept, vetted{anchor: anchor, comment: comment, at: at})
+	return rejected{}, true
+}
+
+// missing says where a quote stopped matching the section it was supposed to be
+// copied out of.
+//
+// "Not found" is a coin flip to retry against: the model has no way to tell
+// whether it invented the passage or mistyped a word in it. Being shown the
+// longest piece that did match, and what the text actually says from there,
+// makes the usual case a one-word correction.
+func (g *sectionGate) missing(quote string) string {
+	prefix, at, ok := longestPrefixIn(g.rendered, g.section, quote)
+	if !ok {
+		return "no part of that is in the section. Quote from the text in my message, not from the file."
+	}
+
+	// As much of the real text as the quote claimed to be, so the difference is
+	// visible rather than described.
+	end := at.Start + len(quote) + 16
+	if end > g.section.End {
+		end = g.section.End
+	}
+	if end > len(g.rendered.Text) {
+		end = len(g.rendered.Text)
+	}
+
+	return fmt.Sprintf("it matches as far as %q, and the text there reads: %q",
+		oneLine(prefix), oneLine(toWordEnd(g.rendered.Text[at.Start:end])))
+}
+
+// toWordEnd trims a excerpt back to its last whole word.
+//
+// The excerpt is there to be copied out of, and one ending mid-word invites a
+// requote that ends mid-word too -- which anchors, technically, and highlights
+// half a sentence. Left alone if there is no space to trim to, since a cut is
+// better than nothing to show.
+func toWordEnd(s string) string {
+	if at := strings.LastIndexAny(s, " \t\n"); at > len(s)/2 {
+		return s[:at]
+	}
+	return s
+}
+
+// longestPrefixIn finds the longest opening piece of a quote that is still in
+// the section, and one place it occurs.
+//
+// Walking up rather than down, and stopping at the first miss: if a prefix is
+// not in the text then nothing longer that starts with it can be either, so the
+// first failure is the answer.
+func longestPrefixIn(rendered mdast.Rendered, section mdast.Section, quote string) (string, Location, bool) {
+	best, at, found := "", Location{}, false
+
+	for _, end := range runeEnds(quote) {
+		where, ok := firstIn(rendered.Text, quote[:end], section.Start, section.End)
+		if !ok {
+			break
+		}
+		best, at, found = quote[:end], where, true
+	}
+	return best, at, found
+}
+
+// runeEnds lists the offsets a string can be cut at without splitting a rune.
+func runeEnds(s string) []int {
+	var ends []int
+	for i := range s {
+		if i > 0 {
+			ends = append(ends, i)
+		}
+	}
+	if len(s) > 0 {
+		ends = append(ends, len(s))
+	}
+	return ends
+}
+
+func overlapsVetted(kept []vetted, at Location) bool {
+	for _, v := range kept {
+		if v.at.Start < at.End && at.Start < v.at.End {
+			return true
+		}
+	}
+	return false
+}
+
+// fileVetted turns what the gate kept into threads and tells the browser.
+func (r *Review) fileVetted(docPath, brief string, kept []vetted) int {
+	if len(kept) == 0 {
+		return 0
+	}
+
+	r.mu.Lock()
+	for _, v := range kept {
+		thread := &Thread{
+			ID:       uuid.NewString(),
+			Doc:      docPath,
+			Anchor:   v.anchor,
+			Status:   StatusOpen,
+			Origin:   OriginModel,
+			Brief:    brief,
+			Messages: []Message{{Role: RoleAssistant, Text: v.comment}},
+			Created:  time.Now().UTC(),
+		}
+		r.threads[thread.ID] = thread
+		r.order = append(r.order, thread.ID)
+	}
+	r.mu.Unlock()
+
+	r.broadcastThreads(docPath)
+	return len(kept)
 }
 
 // quotesTaken lists the passages in a section that are already being discussed,
@@ -231,84 +487,6 @@ func (r *Review) quotesTaken(docPath, brief string, rendered mdast.Rendered, sec
 	return out
 }
 
-// fileProposals turns what the model offered into threads, dropping whatever
-// cannot be anchored.
-//
-// The gate is the point of the whole design. A comment whose passage cannot be
-// found is not a comment; it is a remark about a document with nowhere to put
-// it, and showing it anyway would put a thread on screen that no highlight
-// corresponds to. Every proposal is therefore found in the section it was taken
-// from, given the context around it, and then located again in the file exactly
-// the way every later re-anchoring will locate it. Anything that fails is
-// counted and reported, never guessed at.
-func (r *Review) fileProposals(docPath, brief string, rendered mdast.Rendered, section mdast.Section, proposals []proposal) int {
-	if len(proposals) == 0 {
-		return 0
-	}
-
-	// Read again rather than reusing the pass's copy: an editing turn or the
-	// reviewer's own hand may have changed the file since the pass started, and
-	// a thread anchored to text that is no longer there is born outdated.
-	src, err := r.read(docPath)
-	if err != nil {
-		return 0
-	}
-	current := mdast.Flatten(src)
-
-	var filed []*Thread
-	dropped := 0
-
-	for _, p := range proposals {
-		comment := strings.TrimSpace(p.Comment)
-		quote := strings.TrimSpace(p.Quote)
-		if comment == "" || len(quote) < quoteFloor {
-			dropped++
-			continue
-		}
-
-		anchor, at, ok := AnchorIn(rendered, section, quote)
-		if !ok {
-			dropped++
-			continue
-		}
-		if _, ok := LocateIn(current, anchor); !ok {
-			dropped++
-			continue
-		}
-		if r.overlaps(docPath, brief, rendered, at) || overlapsFiled(rendered, filed, at) {
-			continue
-		}
-
-		filed = append(filed, &Thread{
-			ID:       uuid.NewString(),
-			Doc:      docPath,
-			Anchor:   anchor,
-			Status:   StatusOpen,
-			Origin:   OriginModel,
-			Brief:    brief,
-			Messages: []Message{{Role: RoleAssistant, Text: comment}},
-			Created:  time.Now().UTC(),
-		})
-	}
-
-	if len(filed) > 0 {
-		r.mu.Lock()
-		for _, thread := range filed {
-			r.threads[thread.ID] = thread
-			r.order = append(r.order, thread.ID)
-		}
-		r.mu.Unlock()
-		r.broadcastThreads(docPath)
-	}
-
-	if dropped > 0 {
-		r.publish(errorFrame{Type: "error", Message: fmt.Sprintf(
-			"%d comment(s) on %s quoted text that is not in the document and were dropped.",
-			dropped, docPath)})
-	}
-	return len(filed)
-}
-
 // overlaps reports that an existing thread already covers this passage. Same
 // rule as quotesTaken, applied to what the model sent back rather than to what
 // it was told.
@@ -333,17 +511,6 @@ func (r *Review) overlaps(docPath, brief string, rendered mdast.Rendered, at Loc
 	return false
 }
 
-func overlapsFiled(rendered mdast.Rendered, filed []*Thread, at Location) bool {
-	for _, thread := range filed {
-		if other, ok := firstIn(rendered.Text, strings.TrimSpace(thread.Anchor.Quote), 0, len(rendered.Text)); ok {
-			if other.Start < at.End && at.Start < other.End {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 // parseProposals pulls the comments out of a turn's final text.
 //
 // The model is asked for a fenced JSON array and mostly sends one, wrapped in
@@ -352,11 +519,9 @@ func overlapsFiled(rendered mdast.Rendered, filed []*Thread, at Location) bool {
 // puts the answer second; the bare text is tried too, for the turn that sent
 // nothing but the array.
 //
-// This is the cheap half of the design. The proper version is a tool the daemon
-// answers, called once per comment, which can say "that passage is not in the
-// section I gave you" while the model is still in a position to fix it. Until
-// then a bad quote is silently expensive, which is what the dropped count in
-// fileProposals exists to make visible.
+// A model that ignores the format entirely sends prose and nothing parses, and
+// that is a real outcome rather than an error: the turn raised nothing. It is
+// the repair round, not this, that gets a misquote looked at again.
 func parseProposals(text string) []proposal {
 	var best []proposal
 	found := false

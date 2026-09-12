@@ -229,3 +229,102 @@ func TestTheCriticHasNoEditingTools(t *testing.T) {
 		}
 	}
 }
+
+// The document the repair round needs: two passages long enough to quote, so a
+// misquote of the second has somewhere to land that the first has not claimed.
+const twoPassageDoc = `# Retry policy
+
+The system SHALL retry indefinitely until the operation succeeds, without
+any upper bound on the number of attempts made.
+
+Callers are expected to handle the case where no retry is possible at all,
+which this document does not otherwise describe.
+`
+
+// A misquoted passage is the common failure and the expensive one: the comment
+// is thrown away, and a thrown-away comment looks exactly like a comment that
+// was never raised. The second look is what turns it back into a comment.
+func TestAMisquoteIsRepairedRatherThanDropped(t *testing.T) {
+	rev, root := newReview(t)
+
+	if err := os.WriteFile(filepath.Join(root, "long.md"), []byte(twoPassageDoc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := rev.StartPass("long.md", "check the claims"); err != nil {
+		t.Fatalf("StartPass: %v", err)
+	}
+	waitForPass(t, rev, "long.md")
+
+	threads := rev.ThreadsFor("long.md")
+
+	// One quoted correctly, one requoted after being shown where it diverged.
+	// The third quotes text that is in no document and stays dropped.
+	if len(threads) != 2 {
+		t.Fatalf("got %d threads, want 2 (one quoted, one repaired): %+v", len(threads), threads)
+	}
+
+	var repaired *review.Thread
+	for _, thread := range threads {
+		if strings.Contains(thread.Messages[0].Text, "Requoted") {
+			repaired = thread
+		}
+	}
+	if repaired == nil {
+		t.Fatalf("the misquoted comment was dropped rather than repaired: %+v", threads)
+	}
+
+	// And it is a real anchor, not a plausible-looking one.
+	src, err := os.ReadFile(filepath.Join(root, "long.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := review.Locate(string(src), repaired.Anchor); !ok {
+		t.Errorf("the repaired anchor cannot be found in the document: %+v", repaired.Anchor)
+	}
+}
+
+// What the repair round cannot save still has to be admitted to. Silence is
+// what a pass that failed looks like.
+func TestWhatCannotBeRepairedIsReported(t *testing.T) {
+	rev, root := newReview(t)
+
+	if err := os.WriteFile(filepath.Join(root, "long.md"), []byte(twoPassageDoc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	frames, cancel := rev.Subscribe()
+	defer cancel()
+
+	if err := rev.StartPass("long.md", "check the claims"); err != nil {
+		t.Fatalf("StartPass: %v", err)
+	}
+	waitForPass(t, rev, "long.md")
+
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case data := <-frames:
+			var frame struct {
+				Type    string `json:"type"`
+				Message string `json:"message"`
+			}
+			if err := json.Unmarshal(data, &frame); err != nil || frame.Type != "error" {
+				continue
+			}
+			if !strings.Contains(frame.Message, "dropped") {
+				continue
+			}
+			// One notice for the pass, naming the document and the count.
+			if !strings.Contains(frame.Message, "long.md") {
+				t.Errorf("the notice does not name the document: %q", frame.Message)
+			}
+			if !strings.HasPrefix(frame.Message, "1 comment") {
+				t.Errorf("want exactly one comment lost, got %q", frame.Message)
+			}
+			return
+		case <-deadline:
+			t.Fatal("nothing was reported about the comment that could not be placed")
+		}
+	}
+}

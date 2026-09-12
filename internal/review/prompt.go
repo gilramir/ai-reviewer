@@ -103,6 +103,8 @@ Rules for the quote:
 - Copy it character for character out of the section text in the message.
   Do not quote the file on disk, do not add Markdown, do not tidy the wording.
   A quote that is not in the text is thrown away and your comment with it.
+  If I tell you a quote could not be placed, send the array again with only
+  those comments, requoted from the section text already in this conversation.
 - Quote a whole phrase, not a word or two. Short quotes land on the wrong
   sentence. Eight words is a good length; a full sentence is better.
 - One comment per quote. If two things are wrong with one sentence, pick the
@@ -161,6 +163,30 @@ func criticPrompt(docPath, brief, title, text string, taken []string) string {
 			fmt.Fprintf(&b, "- %s\n", oneLine(quote))
 		}
 	}
+
+	return b.String()
+}
+
+// repairPrompt gives the model a second look at the passages it misquoted.
+//
+// It names each one and says where it stopped matching, because the failure is
+// almost never an invented passage -- it is a word changed on the way out, and
+// a model shown the divergence fixes it in one line. The section text is not
+// repeated: it is still in the conversation, which is the whole reason this is
+// a second turn rather than a second pass.
+func repairPrompt(bad []rejected) string {
+	var b strings.Builder
+
+	b.WriteString("These comments were dropped. Each quotes a passage I could not find\n")
+	b.WriteString("in the section as I gave it to you:\n\n")
+
+	for _, one := range bad {
+		fmt.Fprintf(&b, "- %s\n  %s\n", oneLine(one.quote), one.reason)
+	}
+
+	b.WriteString("\nSend the array again with only these, requoted character for character\n")
+	b.WriteString("from that section text. Drop any you cannot place: a comment with no\n")
+	b.WriteString("passage is worse than no comment. Do not raise anything new.")
 
 	return b.String()
 }

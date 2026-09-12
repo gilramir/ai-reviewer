@@ -3,6 +3,7 @@ package review
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/gilramir/ai-reviewer/internal/mdast"
 )
@@ -114,5 +115,106 @@ func TestAQuoteCarryingMarkdownIsNotAnchored(t *testing.T) {
 	}
 	if _, _, ok := AnchorIn(rendered, sections[0], "a guide and on"); !ok {
 		t.Error("the same passage as the reader sees it was not found")
+	}
+}
+
+// The hint a misquote gets back is the whole value of the second look. "Not
+// found" is a coin flip to retry against: the model cannot tell whether it
+// invented the passage or changed a word in it.
+func TestAMisquoteIsToldWhereItDiverged(t *testing.T) {
+	src := []byte("# Anchors\n\nThe reviewer selected the passage, and the daemon found it again.\n")
+	rendered := mdast.Flatten(src)
+	section := rendered.Sections(0)[0]
+
+	gate := &sectionGate{rendered: rendered, section: section, current: rendered}
+
+	// One word wrong, which is the failure that actually happens.
+	reason := gate.missing("The reviewer has selected the passage, and the daemon")
+
+	if !strings.Contains(reason, "The reviewer") {
+		t.Errorf("the reason does not say how far the quote matched: %q", reason)
+	}
+	if !strings.Contains(reason, "selected the passage") {
+		t.Errorf("the reason does not show what the text actually says: %q", reason)
+	}
+	if strings.Contains(reason, "no part of that") {
+		t.Errorf("a quote that mostly matched was reported as wholly absent: %q", reason)
+	}
+}
+
+// An invented passage gets told so plainly, rather than being handed a hint
+// built out of one accidental letter.
+func TestAnInventedPassageIsToldItIsAbsent(t *testing.T) {
+	rendered := mdast.Flatten([]byte("# Anchors\n\nThe reviewer selected the passage.\n"))
+	section := rendered.Sections(0)[0]
+
+	gate := &sectionGate{rendered: rendered, section: section, current: rendered}
+
+	if reason := gate.missing("§§ nowhere at all §§"); !strings.Contains(reason, "no part of that") {
+		t.Errorf("reason = %q, want it to say the passage is simply absent", reason)
+	}
+}
+
+// The prefix search stops at the first miss, which is only sound because a
+// quote whose opening is absent cannot have a longer opening that is present.
+func TestTheLongestMatchingPrefixIsFound(t *testing.T) {
+	rendered := mdast.Flatten([]byte("alpha beta gamma delta\n"))
+	section := rendered.Sections(0)[0]
+
+	prefix, at, ok := longestPrefixIn(rendered, section, "alpha beta GAMMA")
+	if !ok {
+		t.Fatal("nothing matched at all")
+	}
+	if prefix != "alpha beta " {
+		t.Errorf("prefix = %q, want %q", prefix, "alpha beta ")
+	}
+	if at.Start != 0 {
+		t.Errorf("prefix located at %d, want 0", at.Start)
+	}
+
+	if _, _, ok := longestPrefixIn(rendered, section, "zeta"); ok {
+		t.Error("a quote with nothing in common reported a matching prefix")
+	}
+}
+
+// Quotes arrive from a model and can hold anything. Cutting one to find its
+// longest matching prefix must not cut a rune in half.
+func TestPrefixSearchDoesNotSplitARune(t *testing.T) {
+	rendered := mdast.Flatten([]byte("the naïve approach — it fails\n"))
+	section := rendered.Sections(0)[0]
+
+	prefix, _, ok := longestPrefixIn(rendered, section, "the naïve approach — and then")
+	if !ok {
+		t.Fatal("nothing matched")
+	}
+	if !utf8.ValidString(prefix) {
+		t.Errorf("prefix %q is not valid UTF-8", prefix)
+	}
+	if !strings.Contains(prefix, "naïve") {
+		t.Errorf("prefix = %q, want it past the accented word", prefix)
+	}
+}
+
+// A rejection the model can do nothing about is not sent back to it: asking for
+// an overlapping passage again invites it to widen the quote until the check
+// stops noticing.
+func TestAnOverlappingProposalIsSkippedRatherThanRefused(t *testing.T) {
+	rendered := mdast.Flatten([]byte("# Doc\n\nThe system retries indefinitely until it succeeds.\n"))
+	section := rendered.Sections(0)[0]
+
+	rev := newReview(t, t.TempDir())
+	gate := &sectionGate{rev: rev, rendered: rendered, section: section, current: rendered}
+
+	first := proposal{Quote: "The system retries indefinitely until it succeeds.", Comment: "One."}
+	if _, ok := gate.admit(first); !ok {
+		t.Fatal("the first proposal was refused")
+	}
+
+	inside := proposal{Quote: "retries indefinitely until it succeeds", Comment: "Two."}
+	if why, ok := gate.admit(inside); !ok {
+		t.Errorf("an overlapping proposal was sent back for repair: %q", why.reason)
+	}
+	if len(gate.kept) != 1 {
+		t.Errorf("kept %d proposals, want the overlapping one dropped quietly", len(gate.kept))
 	}
 }

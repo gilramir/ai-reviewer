@@ -286,10 +286,20 @@ and committed with them; **Review** takes it silently and **for…** overrides i
 for one pass. A reviewer made to type a brief every time types "review this",
 which is the bare trigger with a form in front of it.
 
-Parsing the comments out of a fenced JSON array is the cheap half of this. The
-proper version is a tool the daemon answers once per comment, which can say
-*that passage is not in the section I gave you* while the model can still fix
-it; until then a bad quote is silently expensive.
+**A misquote gets a second look.** The usual failure is not an invented passage
+but a word changed on the way out — *"the reviewer has selected"* for *"the
+reviewer selected"* — and the comment attached to it is thrown away, where it is
+indistinguishable from a comment that was never raised. So the pass asks again
+about everything it could not place, naming for each one the longest piece that
+did match and what the text actually says from there. One round: if it was not
+there the second time, it was never there. What is still lost after that is
+reported once for the pass, and that count is the number to watch.
+
+Comments still travel as a fenced JSON array rather than through a tool the
+daemon answers per call. The repair round is what the tool was mostly for; what
+a tool would add on top is comments appearing one at a time instead of one
+section at a time, and a refusal at the moment of each mistake rather than in a
+batch at the end.
 
 ### Changing the model mid-review
 

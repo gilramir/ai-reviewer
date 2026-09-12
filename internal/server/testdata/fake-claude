@@ -9,8 +9,9 @@ exactly as the real CLI does.
 Behaviour: a comment containing "reword" rewrites the quoted passage in the
 named file and reports an Edit tool call. A reviewing pass -- recognised by the
 section it is handed -- answers with the fenced JSON array of proposals the
-critic prompt asks for. Anything else is answered with prose and touches
-nothing.
+critic prompt asks for. Asked to repair a misquote, it does what a real model
+would: it takes the text the daemon showed it and requotes from that. Anything
+else is answered with prose and touches nothing.
 """
 import json
 import os
@@ -57,18 +58,53 @@ def parse_section(text):
 def review_reply(section):
     """Answer a reviewing pass.
 
-    One proposal quoting the longest line of the section, which must anchor,
-    and one quoting text that is nowhere in the document, which must not. The
-    daemon's gate is the whole point of the feature, so the stub exercises
-    both sides of it on every section.
+    Three proposals, one of each kind the gate has to tell apart:
+
+    - one quoting the longest line of the section, which must anchor;
+    - one whose opening words are real but which then diverges, which must be
+      refused and then repaired from the hint the daemon sends back;
+    - one that is nowhere in the document at all, which must be refused and
+      must stay refused.
+
+    The gate is the whole point of the feature, so the stub exercises every
+    side of it on every section.
     """
-    quotable = max(section.split("\n"), key=len).strip()
+    lines = [line.strip() for line in section.split("\n") if line.strip()]
+    quotable = max(lines, key=len)
+
     proposals = [
         {"quote": quotable, "comment": "The fake reviewer has doubts about this."},
-        {"quote": "a passage that appears nowhere in any document under review",
-         "comment": "This one cannot be anchored and must be dropped."},
+        {"quote": "\u00a7\u00a7 a passage in no document anywhere \u00a7\u00a7",
+         "comment": "This one cannot be anchored at all and must be dropped."},
     ]
+
+    # A misquote of some other line, so that repairing it lands somewhere the
+    # first proposal has not already claimed. Without a second long line there
+    # is nowhere for it to go, and the section simply does not exercise repair.
+    others = [line for line in lines if line != quotable and len(line) > 40]
+    if others:
+        proposals.insert(1, {
+            "quote": " ".join(others[-1].split()[:4]) + " something it never said",
+            "comment": "This one is misquoted and can be repaired.",
+        })
     return "Here is what I found.\n\n```json\n" + json.dumps(proposals, indent=2) + "\n```\n"
+
+
+def repair_reply(text):
+    """Requote from what the daemon says the text actually reads.
+
+    A real model fixes a misquote by looking at the divergence it is shown.
+    This does the same thing mechanically, which is the point: if the hint is
+    not enough to requote from, this stub cannot do it either and the test
+    fails.
+    """
+    proposals = [
+        {"quote": reads, "comment": "Requoted from the text you showed me."}
+        for reads in re.findall(r"the text there reads: \"((?:[^\"\\\\]|\\\\.)*)\"", text)
+    ]
+    for i, p in enumerate(proposals):
+        proposals[i]["quote"] = p["quote"].encode().decode("unicode_escape")
+    return "Requoted.\n\n```json\n" + json.dumps(proposals, indent=2) + "\n```\n"
 
 
 def handle(text):
@@ -76,6 +112,14 @@ def handle(text):
           "tools": ["Read", "Edit", "Write", "Grep", "Glob"], "mcp_servers": []})
 
     section = parse_section(text)
+    if "These comments were dropped" in text:
+        reply = repair_reply(text)
+        emit({"type": "assistant", "session_id": SESSION, "message": {
+            "role": "assistant", "content": [{"type": "text", "text": reply}]}})
+        emit({"type": "result", "subtype": "success", "session_id": SESSION,
+              "result": reply, "is_error": False, "total_cost_usd": 0.01})
+        return
+
     if section is not None:
         reply = review_reply(section)
         emit({"type": "assistant", "session_id": SESSION, "message": {
