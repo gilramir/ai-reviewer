@@ -47,12 +47,19 @@ this"* wants a change, and plenty of comments want both. The comment is passed
 through and the daemon reports what actually happened by watching which tools
 the model called.
 
+**A thread does not care who opened it.** The model can read a document and
+raise comments of its own, and those are the same threads: same anchor, same
+highlight, same conversation. See [the machine reviewer](#the-machine-reviewer)
+below, and [machineReview.md](machineReview.md) for the design as it was argued
+out beforehand.
+
 ## Layout
 
 ```
 cmd/ai-reviewer/      CLI: serve, password
 internal/mdast/       goldmark -> JSON AST with source spans
-internal/review/      documents, threads, anchoring, assets, turn lifecycle
+internal/review/      documents, threads, anchoring, assets, turn lifecycle;
+                      critic.go is the pass that raises comments of its own
 internal/claudeproc/  the long-lived claude process, one per document
                       (protocol write-up: docs/backendClaude.md)
 internal/gitstore/    one commit per turn; snapshots outside a repo
@@ -231,6 +238,58 @@ pointed at a repository rather than a `docs/` directory: the daemon lists every
 `.md` under the review root, fifty of them scroll sideways, and the name of the
 document actually open can be scrolled out of sight. A top bar owes you the name
 of the thing you are reading; the rest is a list, and a list belongs behind it.
+
+### The machine reviewer
+
+Press **Review** and the model reads the document and files comments for you to
+answer. It is the same tool pointed the other way, and it reuses the thread
+whole: a thread is an anchor and a transcript, so the highlight, the
+re-anchoring after an edit, the outdating of a rewritten passage and the click
+from a passage to the conversation about it all work already. `Thread.Origin`
+says whose it is; there is no fifth status, because `open` already means
+somebody owes something and who is a reading of who spoke last.
+
+**It works a section at a time.** A model asked to review a whole file returns
+about five comments whether the file is three hundred words or five thousand,
+so the daemon walks the document's heading sections and spends a turn on each.
+Threads land as each section finishes, so you start reading before the pass
+does. The split is at the shallowest heading level that occurs more than once —
+a level that occurs once is a title, a level that repeats is a structure.
+
+**The quote is the hard part.** A comment whose passage cannot be found is a
+remark with nowhere to put it, so the section's text goes into the prompt as
+the *reader* sees it and the model is told to quote out of that. Letting it
+Read the file instead gets you a quote full of Markdown that is not in the
+rendered text and can never be anchored. Every proposal is then found in the
+section it came from, given the context around it — a bare quote is not an
+anchor, `the reviewer` occurs a dozen times in a document about reviewing — and
+located again in the file exactly as every later re-anchoring will locate it.
+What fails is counted and reported rather than guessed at.
+
+**The critic is a second process with no Edit tool.** A reviewer that quietly
+fixes what it found has destroyed the review, so it is a second
+`claudeproc.Manager` running `Read`, `Grep` and `Glob` only. That was forced
+rather than chosen: the system prompt lives on the manager, and the editing one
+says to make the change with the Edit tool. Holding the line at the process
+boundary beats asking a prompt to hold it.
+
+**Replies go to the editor, not the critic.** *"Yes, fix that"* has to land
+where the Edit tool is, and that conversation has never heard of the comment, so
+the first reply on a machine thread restates the passage and what was raised
+about it.
+
+**The brief is what makes it shut up.** With nothing to look for, every sentence
+is in scope and you get a *consider tightening this* on each paragraph. A brief
+makes *not what you asked about* a reason to say nothing. It lives in
+`.ai-reviewer/review.md`, beside the documents it governs, so it can be edited
+and committed with them; **Review** takes it silently and **for…** overrides it
+for one pass. A reviewer made to type a brief every time types "review this",
+which is the bare trigger with a form in front of it.
+
+Parsing the comments out of a fenced JSON array is the cheap half of this. The
+proper version is a tool the daemon answers once per comment, which can say
+*that passage is not in the section I gave you* while the model can still fix
+it; until then a bad quote is silently expensive.
 
 ### Changing the model mid-review
 

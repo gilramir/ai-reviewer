@@ -7,7 +7,9 @@ Review Markdown documents in a browser, with Claude Code editing them under you.
 ![A document under review. In the margin, two resolved threads and a live one where Claude answered a question and then made the edit it was asked for. On the page, the passages that changed since the session started are tinted, the passage the open thread is anchored to is highlighted, and a new comment is being written against the current selection.](docs/screenshot.png)
 
 Select a passage, type a comment — *"why this?"*, *"reword this"* — and the
-answer appears in the margin, or the document changes and re-renders. Every
+answer appears in the margin, or the document changes and re-renders. Or press
+**Review** and have it read the document and raise the comments, for you to
+answer. Every
 change that lands is a commit on a review branch the daemon cuts from the
 branch you were on, so a review session leaves a diff you can read and undo.
 Nothing reaches your own branch until you merge the review branch yourself.
@@ -73,6 +75,25 @@ finds `internal/review/README.md`.
 margin; a request gets the document edited and re-rendered, with the thread
 recording what was done. Shift-Enter sends, in the comment box, the editor,
 and a thread's reply box alike.
+
+**Having it review the document.** **Review** reads the document a section at a
+time and files comments of its own — a claim that looks wrong, a step that is
+missing, a passage that contradicts another. They arrive as ordinary threads:
+highlighted on the page, and yours to answer, argue with, or resolve. Replying
+*"yes, fix that"* gets it fixed like any other request.
+
+The comments appear section by section as it works, so you can start reading
+before it finishes; the **interrupt** button stops it and keeps what arrived.
+
+**What it looks for.** Write it in `.ai-reviewer/review.md` — one paragraph
+saying what matters in your documents — and **Review** uses it every time. For
+a one-off, **for…** opens the brief with a box to change it. This is worth
+doing: with nothing particular to look for, a model comments on everything at
+once and none of it is worth much.
+
+It never edits during a review. The process that reads your document is started
+without the tools that could change it, which you can check in the settings
+panel.
 
 **Editing it yourself.** When you already have the words you want, **Edit it
 myself** opens the passage as Markdown source. Save writes it straight to the

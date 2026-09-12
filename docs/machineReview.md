@@ -1,7 +1,13 @@
 # A machine reviewer
 
-**Status: a proposal.** Nothing here is built. It is written down so it can be
-argued with before any code moves.
+**Status: built, and kept as the record of why.** This was written as a proposal
+and argued with before any code moved; it is left in the tense it was written in
+rather than rewritten into a description. [developer.md](developer.md#the-machine-reviewer)
+says what the thing does now.
+
+One part is deliberately still undone: the proposal tool. Comments are parsed
+out of a fenced JSON array, which is the cheap version this argues against, and
+the reasons it gives for replacing it have not changed.
 
 Today the human reviews and the model works: the reviewer selects a passage,
 comments on it, and the daemon reports what the model did about it. This
