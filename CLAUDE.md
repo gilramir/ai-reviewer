@@ -97,15 +97,18 @@ the tree as a space.
 ### Packages
 
 ```
-cmd/ai-reviewer/      CLI: serve, password
+cmd/ai-reviewer/      CLI: serve, password, log-view
 internal/mdast/       goldmark -> JSON AST with source spans; Flatten, Words
 internal/review/      documents, threads, anchoring, assets, turn lifecycle
 internal/claudeproc/  the long-lived claude process, one per document
 internal/textdiff/    Myers diff over words, for the change highlight
 internal/gitstore/    one commit per turn; directory snapshots outside a repo
 internal/server/      HTTP, auth, WebSocket
+internal/wirelog/     SQLite log of every frame on claude's pipes (--claude-log)
+internal/logview/     HTTP for `log-view`, the page that reads that log
 web/src/              Doc (decoder), Protocol (wire), Marks (anchoring +
-                      highlights), Picker (document list), Main (app)
+                      highlights), Picker (document list), Main (app);
+                      LogView + JsonTree are a second program, the log viewer
 tools/                development scripts, not built and not shipped:
                       screenshot.py photographs the UI of a running daemon
 ```

@@ -29,6 +29,12 @@ Unrelated paragraph.
 // stub CLI in testdata.
 func newReview(t *testing.T) (*review.Review, string) {
 	t.Helper()
+	return newReviewWith(t, nil)
+}
+
+// newReviewWith is newReview with a chance to adjust the options first.
+func newReviewWith(t *testing.T, adjust func(*review.Options)) (*review.Review, string) {
+	t.Helper()
 
 	root := t.TempDir()
 	for _, args := range [][]string{
@@ -55,11 +61,15 @@ func newReview(t *testing.T) (*review.Review, string) {
 		t.Fatal(err)
 	}
 
-	rev, err := review.New(review.Options{
+	opts := review.Options{
 		Root:         root,
 		Branch:       "review/test",
 		ClaudeBinary: stub,
-	})
+	}
+	if adjust != nil {
+		adjust(&opts)
+	}
+	rev, err := review.New(opts)
 	if err != nil {
 		t.Fatal(err)
 	}

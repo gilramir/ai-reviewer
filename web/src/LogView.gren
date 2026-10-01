@@ -1,0 +1,1277 @@
+module LogView exposing (main)
+
+{-| The wire log viewer: every frame that crossed a claude process's pipes, one
+per line above, and the one selected opened out below.
+
+It polls rather than holding a socket. The log is a file another process is
+appending to, and asking for whatever came after the last id seen is all
+following it takes; a socket would need the viewer's server to watch the file
+for it, to say the same thing sooner.
+
+-}
+
+import Array exposing (Array)
+import Browser
+import Browser.Dom as Dom
+import Dict exposing (Dict)
+import Html exposing (Html)
+import Html.Attributes as Attr
+import Html.Events as Events
+import Html.Keyed
+import Html.Lazy
+import Http
+import Json.Decode as Decode exposing (Decoder)
+import Json.Encode as Encode
+import JsonTree exposing (Body(..), Json)
+import Math
+import Set exposing (Set)
+import Task
+import Time
+
+
+-- MODEL
+
+
+type alias Row =
+    { id : Int
+    , ts : Int
+    , dir : String
+    , typ : String
+    , subtype : String
+    , process : Int
+    , role : String
+    , doc : String
+    , turn : Maybe Int
+    , turnStart : Maybe Int
+    , replyTo : Maybe Int
+    , cost : Maybe Float
+    , summary : String
+    }
+
+
+type alias ToolCall =
+    { id : String
+    , name : String
+    , useFrame : Int
+    , resultFrame : Maybe Int
+    , isError : Maybe Bool
+    }
+
+
+type alias Turn =
+    { id : Int
+    , startedAt : Int
+    , endedAt : Maybe Int
+    , purpose : String
+    , model : String
+    , subtype : String
+    , isError : Maybe Bool
+    , cost : Maybe Float
+    , inputTokens : Maybe Int
+    , outputTokens : Maybe Int
+    , cacheReadTokens : Maybe Int
+    , cacheCreationTokens : Maybe Int
+    , durationMs : Maybe Int
+    , durationApiMs : Maybe Int
+    , numTurns : Maybe Int
+    }
+
+
+type alias Process =
+    { id : Int
+    , role : String
+    , doc : String
+    , sessionId : String
+    , argv : Array String
+    , cwd : String
+    , pid : Int
+    , endReason : String
+    , exitStatus : String
+    }
+
+
+type alias Detail =
+    { id : Int
+    , ts : Int
+    , dir : String
+    , raw : Decode.Value
+    , json : Json
+    , tools : Array ToolCall
+    , turn : Maybe Turn
+    , process : Process
+    }
+
+
+type Loadable a
+    = Nothing_
+    | Loading
+    | Loaded a
+    | Failed String
+
+
+type alias Model =
+    { rows : Array Row
+    , lastId : Int
+    , fetching : Bool
+    , selected : Maybe Int
+    , detail : Loadable Detail
+    , toggled : Set String
+    , raw : Bool
+    , doc : String
+    , text : String
+    , onlyTurn : Maybe Int
+    , quiet : Bool
+    , follow : Bool
+    , zone : Time.Zone
+    , error : Maybe String
+    }
+
+
+init : {} -> { model : Model, command : Cmd Msg }
+init _ =
+    { model =
+        { rows = []
+        , lastId = 0
+        , fetching = True
+        , selected = Nothing
+        , detail = Nothing_
+        , toggled = Set.empty
+        , raw = False
+        , doc = ""
+        , text = ""
+        , onlyTurn = Nothing
+        , quiet = False
+        , follow = True
+        , zone = Time.utc
+        , error = Nothing
+        }
+    , command =
+        Cmd.batch
+            [ fetchRows 0
+            , Task.perform GotZone Time.here
+            ]
+    }
+
+
+-- UPDATE
+
+
+type Msg
+    = GotZone Time.Zone
+    | Tick
+    | GotRows (Result Http.Error { frames : Array Row, more : Bool })
+    | Select Int
+    | Move Int
+    | GotDetail { id : Int, result : Result Http.Error Detail }
+    | Toggle String
+    | SetRaw Bool
+    | SetDoc String
+    | SetText String
+    | OnlyTurn (Maybe Int)
+    | SetQuiet Bool
+    | SetFollow Bool
+    | Settled
+
+
+update : Msg -> Model -> { model : Model, command : Cmd Msg }
+update msg model =
+    when msg is
+        GotZone zone ->
+            { model = { model | zone = zone }, command = Cmd.none }
+
+        Tick ->
+            if model.fetching then
+                { model = model, command = Cmd.none }
+
+            else
+                { model = { model | fetching = True }, command = fetchRows model.lastId }
+
+        GotRows (Ok page) ->
+            let
+                lastId =
+                    Array.last page.frames
+                        |> Maybe.map .id
+                        |> Maybe.withDefault model.lastId
+
+                next =
+                    { model
+                        | rows = Array.append model.rows page.frames
+                        , lastId = lastId
+                        , fetching = page.more
+                        , error = Nothing
+                    }
+            in
+            { model = next
+            , command =
+                Cmd.batch
+                    [ if page.more then
+                        fetchRows lastId
+
+                      else
+                        Cmd.none
+                    , if model.follow && not (Array.isEmpty page.frames) then
+                        toBottom
+
+                      else
+                        Cmd.none
+                    ]
+            }
+
+        GotRows (Err err) ->
+            { model = { model | fetching = False, error = Just ("Could not read the log: " ++ httpError err) }
+            , command = Cmd.none
+            }
+
+        Select id ->
+            select id model
+
+        Move by ->
+            let
+                visible =
+                    shown model
+
+                at =
+                    model.selected
+                        |> Maybe.andThen (\id -> Array.findFirst (\row -> row.id == id) visible)
+                        |> Maybe.map .index
+            in
+            when
+                (when at is
+                    Just i ->
+                        Array.get (clamp 0 (Array.length visible - 1) (i + by)) visible
+
+                    Nothing ->
+                        if by > 0 then
+                            Array.first visible
+
+                        else
+                            Array.last visible
+                )
+            is
+                Just row ->
+                    let
+                        selected =
+                            select row.id model
+                    in
+                    { model = selected.model
+                    , command = Cmd.batch [ selected.command, reveal row.id ]
+                    }
+
+                Nothing ->
+                    { model = model, command = Cmd.none }
+
+        GotDetail { id, result } ->
+            if model.selected /= Just id then
+                -- An answer to a question no longer being asked.
+                { model = model, command = Cmd.none }
+
+            else
+                when result is
+                    Ok detail ->
+                        { model = { model | detail = Loaded detail }, command = Cmd.none }
+
+                    Err err ->
+                        { model = { model | detail = Failed (httpError err) }, command = Cmd.none }
+
+        Toggle path ->
+            { model = { model | toggled = Set.toggle path model.toggled }, command = Cmd.none }
+
+        SetRaw raw ->
+            { model = { model | raw = raw }, command = Cmd.none }
+
+        SetDoc doc ->
+            { model = { model | doc = doc }, command = Cmd.none }
+
+        SetText text ->
+            { model = { model | text = text }, command = Cmd.none }
+
+        OnlyTurn turn ->
+            { model = { model | onlyTurn = turn }
+            , command =
+                when model.selected is
+                    Just id ->
+                        reveal id
+
+                    Nothing ->
+                        Cmd.none
+            }
+
+        SetQuiet quiet ->
+            { model = { model | quiet = quiet }, command = Cmd.none }
+
+        SetFollow follow ->
+            { model = { model | follow = follow }
+            , command =
+                if follow then
+                    toBottom
+
+                else
+                    Cmd.none
+            }
+
+        Settled ->
+            { model = model, command = Cmd.none }
+
+
+{-| Selecting a frame stops the list following new ones: a row that scrolls
+away the moment it is clicked is not one anybody can read.
+-}
+select : Int -> Model -> { model : Model, command : Cmd Msg }
+select id model =
+    if model.selected == Just id then
+        { model = model, command = Cmd.none }
+
+    else
+        { model =
+            { model
+                | selected = Just id
+                , detail = Loading
+                , toggled = Set.empty
+                , follow = False
+            }
+        , command = fetchDetail id
+        }
+
+
+subscriptions : Model -> Sub Msg
+subscriptions _ =
+    Time.every 2000 (\_ -> Tick)
+
+
+-- FILTERING
+
+
+{-| The rows the list shows, after every filter. Noise is the frames that are
+not the conversation: the daemon's own notes, stderr, and the CLI's rate-limit
+reports.
+-}
+shown : Model -> Array Row
+shown model =
+    let
+        needle =
+            String.toLower (String.trim model.text)
+    in
+    model.rows
+        |> Array.keepIf
+            (\row ->
+                (model.doc == "" || row.doc == model.doc)
+                    && (when model.onlyTurn is
+                            Just turn ->
+                                row.turn == Just turn
+
+                            Nothing ->
+                                True
+                       )
+                    && not (model.quiet && isNoise row)
+                    && (needle == ""
+                            || String.contains needle (String.toLower row.summary)
+                            || String.contains needle (String.toLower row.typ)
+                            || String.contains needle (String.toLower row.doc)
+                       )
+            )
+
+
+isNoise : Row -> Bool
+isNoise row =
+    row.dir == "daemon" || row.dir == "stderr" || row.typ == "rate_limit_event"
+
+
+{-| Each document's reported cost, from the result frames. Summed per turn,
+which is how the review itself counts spend.
+-}
+costByDoc : Array Row -> Dict String { cost : Float, turns : Int }
+costByDoc rows =
+    Array.foldl
+        (\row acc ->
+            when row.cost is
+                Just cost ->
+                    Dict.update row.doc
+                        (\entry ->
+                            when entry is
+                                Just e ->
+                                    Just { cost = e.cost + cost, turns = e.turns + 1 }
+
+                                Nothing ->
+                                    Just { cost = cost, turns = 1 }
+                        )
+                        acc
+
+                Nothing ->
+                    acc
+        )
+        Dict.empty
+        rows
+
+
+-- HTTP
+
+
+fetchRows : Int -> Cmd Msg
+fetchRows after =
+    Http.get
+        { url = "/api/frames?after=" ++ String.fromInt after
+        , expect =
+            Http.expectJson GotRows
+                (Decode.map2 (\frames more -> { frames = frames, more = more })
+                    (Decode.field "frames" (Decode.array rowDecoder))
+                    (Decode.field "more" Decode.bool)
+                )
+        }
+
+
+fetchDetail : Int -> Cmd Msg
+fetchDetail id =
+    Http.get
+        { url = "/api/frame?id=" ++ String.fromInt id
+        , expect = Http.expectJson (\result -> GotDetail { id = id, result = result }) detailDecoder
+        }
+
+
+httpError : Http.Error -> String
+httpError err =
+    when err is
+        Http.BadUrl url ->
+            "bad url " ++ url
+
+        Http.Timeout ->
+            "timed out"
+
+        Http.NetworkError ->
+            "the viewer is not answering"
+
+        Http.BadStatus status ->
+            "status " ++ String.fromInt status
+
+        Http.BadBody body ->
+            body
+
+
+{-| Decodes the fields of a record one at a time, for records with more of
+them than `map8` takes.
+-}
+with : String -> Decoder a -> Decoder (a -> b) -> Decoder b
+with name decoder =
+    Decode.andMap (Decode.field name decoder)
+
+
+rowDecoder : Decoder Row
+rowDecoder =
+    Decode.succeed
+        (\id ts dir typ subtype process role doc turn turnStart replyTo cost summary ->
+            { id = id
+            , ts = ts
+            , dir = dir
+            , typ = typ
+            , subtype = subtype
+            , process = process
+            , role = role
+            , doc = doc
+            , turn = turn
+            , turnStart = turnStart
+            , replyTo = replyTo
+            , cost = cost
+            , summary = summary
+            }
+        )
+        |> with "id" Decode.int
+        |> with "ts" Decode.int
+        |> with "dir" Decode.string
+        |> with "type" Decode.string
+        |> with "subtype" Decode.string
+        |> with "process" Decode.int
+        |> with "role" Decode.string
+        |> with "doc" Decode.string
+        |> with "turn" (Decode.nullable Decode.int)
+        |> with "turnStart" (Decode.nullable Decode.int)
+        |> with "replyTo" (Decode.nullable Decode.int)
+        |> with "cost" (Decode.nullable Decode.float)
+        |> with "summary" Decode.string
+
+
+detailDecoder : Decoder Detail
+detailDecoder =
+    Decode.succeed
+        (\id ts dir raw json tools turn process ->
+            { id = id
+            , ts = ts
+            , dir = dir
+            , raw = raw
+            , json = json
+            , tools = tools
+            , turn = turn
+            , process = process
+            }
+        )
+        |> with "id" Decode.int
+        |> with "ts" Decode.int
+        |> with "dir" Decode.string
+        |> with "raw" Decode.value
+        |> with "raw" JsonTree.decoder
+        |> with "tools" (Decode.array toolDecoder)
+        |> with "turn" (Decode.nullable turnDecoder)
+        |> with "process" processDecoder
+
+
+toolDecoder : Decoder ToolCall
+toolDecoder =
+    Decode.map5
+        (\id name useFrame resultFrame isError ->
+            { id = id, name = name, useFrame = useFrame, resultFrame = resultFrame, isError = isError }
+        )
+        (Decode.field "id" Decode.string)
+        (Decode.field "name" Decode.string)
+        (Decode.field "useFrame" Decode.int)
+        (Decode.field "resultFrame" (Decode.nullable Decode.int))
+        (Decode.field "isError" (Decode.nullable Decode.bool))
+
+
+turnDecoder : Decoder Turn
+turnDecoder =
+    Decode.succeed
+        (\id startedAt endedAt purpose model subtype isError cost inputTokens outputTokens cacheReadTokens cacheCreationTokens durationMs durationApiMs numTurns ->
+            { id = id
+            , startedAt = startedAt
+            , endedAt = endedAt
+            , purpose = purpose
+            , model = model
+            , subtype = subtype
+            , isError = isError
+            , cost = cost
+            , inputTokens = inputTokens
+            , outputTokens = outputTokens
+            , cacheReadTokens = cacheReadTokens
+            , cacheCreationTokens = cacheCreationTokens
+            , durationMs = durationMs
+            , durationApiMs = durationApiMs
+            , numTurns = numTurns
+            }
+        )
+        |> with "id" Decode.int
+        |> with "startedAt" Decode.int
+        |> with "endedAt" (Decode.nullable Decode.int)
+        |> with "purpose" Decode.string
+        |> with "model" Decode.string
+        |> with "subtype" Decode.string
+        |> with "isError" (Decode.nullable Decode.bool)
+        |> with "cost" (Decode.nullable Decode.float)
+        |> with "inputTokens" (Decode.nullable Decode.int)
+        |> with "outputTokens" (Decode.nullable Decode.int)
+        |> with "cacheReadTokens" (Decode.nullable Decode.int)
+        |> with "cacheCreationTokens" (Decode.nullable Decode.int)
+        |> with "durationMs" (Decode.nullable Decode.int)
+        |> with "durationApiMs" (Decode.nullable Decode.int)
+        |> with "numTurns" (Decode.nullable Decode.int)
+
+
+processDecoder : Decoder Process
+processDecoder =
+    Decode.succeed
+        (\id role doc sessionId argv cwd pid endReason exitStatus ->
+            { id = id
+            , role = role
+            , doc = doc
+            , sessionId = sessionId
+            , argv = argv
+            , cwd = cwd
+            , pid = pid
+            , endReason = endReason
+            , exitStatus = exitStatus
+            }
+        )
+        |> with "id" Decode.int
+        |> with "role" Decode.string
+        |> with "doc" Decode.string
+        |> with "sessionId" Decode.string
+        |> with "argv" (Decode.oneOf [ Decode.array Decode.string, Decode.succeed [] ])
+        |> with "cwd" Decode.string
+        |> with "pid" Decode.int
+        |> with "endReason" Decode.string
+        |> with "exitStatus" Decode.string
+
+
+-- SCROLLING
+
+
+listId : String
+listId =
+    "frames"
+
+
+rowId : Int -> String
+rowId id =
+    "frame-" ++ String.fromInt id
+
+
+toBottom : Cmd Msg
+toBottom =
+    Dom.getViewportOf listId
+        |> Task.andThen (\pane -> Dom.setViewportOf listId 0 pane.scene.height)
+        |> Task.attempt (\_ -> Settled)
+
+
+{-| Scrolls the list just far enough to show a row the arrow keys moved to, or
+a tool link jumped to.
+-}
+reveal : Int -> Cmd Msg
+reveal id =
+    Dom.getElement (rowId id)
+        |> Task.andThen
+            (\row ->
+                Dom.getElement listId
+                    |> Task.andThen
+                        (\list ->
+                            Dom.getViewportOf listId
+                                |> Task.andThen
+                                    (\pane ->
+                                        let
+                                            -- Measured from the top of all the
+                                            -- list can scroll through, less the
+                                            -- sticky header the row would
+                                            -- otherwise hide under.
+                                            header =
+                                                row.element.height
+
+                                            top =
+                                                pane.viewport.y + row.element.y - list.element.y
+
+                                            bottom =
+                                                top + row.element.height
+                                        in
+                                        if top - header < pane.viewport.y then
+                                            Dom.setViewportOf listId 0 (top - header)
+
+                                        else if bottom > pane.viewport.y + pane.viewport.height then
+                                            Dom.setViewportOf listId 0 (bottom - pane.viewport.height)
+
+                                        else
+                                            Task.succeed {}
+                                    )
+                        )
+            )
+        |> Task.attempt (\_ -> Settled)
+
+
+-- VIEW
+
+
+view : Model -> Html Msg
+view model =
+    let
+        visible =
+            shown model
+    in
+    Html.div [ Attr.class "log" ]
+        [ viewBar model visible
+        , Html.div
+            [ Attr.id listId
+            , Attr.class "list"
+            , Attr.tabindex 0
+            , keys
+            ]
+            [ Html.table []
+                [ Html.thead []
+                    [ Html.tr []
+                        [ Html.th [ Attr.class "num" ] [ Html.text "No." ]
+                        , Html.th [] [ Html.text "Time" ]
+                        , Html.th [ Attr.class "num" ] [ Html.text "In turn" ]
+                        , Html.th [ Attr.class "num" ] [ Html.text "Proc" ]
+                        , Html.th [ Attr.class "num" ] [ Html.text "Turn" ]
+                        , Html.th [] [ Html.text "" ]
+                        , Html.th [] [ Html.text "Type" ]
+                        , Html.th [] [ Html.text "Document" ]
+                        , Html.th [ Attr.class "wide" ] [ Html.text "Summary" ]
+                        , Html.th [ Attr.class "num" ] [ Html.text "Cost" ]
+                        ]
+                    ]
+                , Html.Keyed.node "tbody"
+                    []
+                    (Array.map
+                        (\row ->
+                            { key = String.fromInt row.id
+                            , node = Html.Lazy.lazy3 viewRow model.zone (model.selected == Just row.id) row
+                            }
+                        )
+                        visible
+                    )
+                ]
+            ]
+        , Html.div [ Attr.class "detail" ] [ viewDetail model ]
+        ]
+
+
+{-| The arrow keys walk the list, as they do in every packet viewer.
+-}
+keys : Html.Attribute Msg
+keys =
+    Events.preventDefaultOn "keydown"
+        (Decode.field "key" Decode.string
+            |> Decode.andThen
+                (\key ->
+                    when key is
+                        "ArrowDown" ->
+                            Decode.succeed { message = Move 1, preventDefault = True }
+
+                        "ArrowUp" ->
+                            Decode.succeed { message = Move -1, preventDefault = True }
+
+                        "PageDown" ->
+                            Decode.succeed { message = Move 20, preventDefault = True }
+
+                        "PageUp" ->
+                            Decode.succeed { message = Move -20, preventDefault = True }
+
+                        _ ->
+                            Decode.fail "not a key the list uses"
+                )
+        )
+
+
+viewBar : Model -> Array Row -> Html Msg
+viewBar model visible =
+    let
+        costs =
+            costByDoc model.rows
+
+        docOption doc =
+            Html.option [ Attr.value doc, Attr.selected (model.doc == doc) ]
+                [ Html.text
+                    (when Dict.get doc costs is
+                        Just c ->
+                            docName doc ++ "  " ++ dollars c.cost
+
+                        Nothing ->
+                            docName doc
+                    )
+                ]
+
+        docs =
+            model.rows
+                |> Array.map .doc
+                |> Set.fromArray
+                |> Set.toArray
+
+        shownCost =
+            Array.foldl (\row sum -> sum + Maybe.withDefault 0 row.cost) 0 visible
+
+        shownTurns =
+            Array.foldl
+                (\row n ->
+                    if row.cost /= Nothing then
+                        n + 1
+
+                    else
+                        n
+                )
+                0
+                visible
+    in
+    Html.div [ Attr.class "bar" ]
+        [ Html.span [ Attr.class "title" ] [ Html.text "claude wire log" ]
+        , Html.select [ Events.onInput SetDoc ]
+            (Array.pushFirst
+                (Html.option [ Attr.value "", Attr.selected (model.doc == "") ] [ Html.text "every document" ])
+                (Array.map docOption docs)
+            )
+        , Html.input
+            [ Attr.type_ "search"
+            , Attr.placeholder "filter"
+            , Attr.value model.text
+            , Events.onInput SetText
+            ]
+            []
+        , when model.onlyTurn is
+            Just turn ->
+                Html.button [ Attr.class "chip", Events.onClick (OnlyTurn Nothing) ]
+                    [ Html.text ("turn " ++ String.fromInt turn ++ " ×") ]
+
+            Nothing ->
+                Html.text ""
+        , checkbox "hide noise" model.quiet SetQuiet
+        , checkbox "follow" model.follow SetFollow
+        , Html.span [ Attr.class "totals" ]
+            [ Html.text
+                (String.fromInt (Array.length visible)
+                    ++ " of "
+                    ++ String.fromInt (Array.length model.rows)
+                    ++ " frames · "
+                    ++ String.fromInt shownTurns
+                    ++ " turns · "
+                    ++ dollars shownCost
+                )
+            ]
+        , when model.error is
+            Just err ->
+                Html.span [ Attr.class "error" ] [ Html.text err ]
+
+            Nothing ->
+                Html.text ""
+        ]
+
+
+checkbox : String -> Bool -> (Bool -> Msg) -> Html Msg
+checkbox label on toMsg =
+    Html.label [ Attr.class "check" ]
+        [ Html.input [ Attr.type_ "checkbox", Attr.checked on, Events.onCheck toMsg ] []
+        , Html.text label
+        ]
+
+
+viewRow : Time.Zone -> Bool -> Row -> Html Msg
+viewRow zone selected row =
+    Html.tr
+        [ Attr.id (rowId row.id)
+        , Attr.class ("dir-" ++ row.dir ++ " type-" ++ row.typ)
+        , Attr.classList [ { class = "selected", enabled = selected } ]
+        , Events.onClick (Select row.id)
+        ]
+        [ Html.td [ Attr.class "num" ] [ Html.text (String.fromInt row.id) ]
+        , Html.td [ Attr.class "time" ] [ Html.text (clock zone row.ts) ]
+        , Html.td [ Attr.class "num" ]
+            [ Html.text
+                (when row.turnStart is
+                    Just start ->
+                        "+" ++ duration ((row.ts - start) // 1000)
+
+                    Nothing ->
+                        ""
+                )
+            ]
+        , Html.td [ Attr.class "num" ] [ Html.text (String.fromInt row.process) ]
+        , Html.td [ Attr.class "num" ] [ Html.text (Maybe.map String.fromInt row.turn |> Maybe.withDefault "") ]
+        , Html.td [ Attr.class "dir" ] [ Html.text (arrow row.dir) ]
+        , Html.td [ Attr.class "type" ] [ Html.text (typeLabel row) ]
+        , Html.td [ Attr.class "doc" ] [ Html.text (docName row.doc) ]
+        , Html.td [ Attr.class "summary" ] [ Html.text row.summary ]
+        , Html.td [ Attr.class "num" ] [ Html.text (Maybe.map dollars row.cost |> Maybe.withDefault "") ]
+        ]
+
+
+arrow : String -> String
+arrow dir =
+    when dir is
+        "in" ->
+            "→"
+
+        "out" ->
+            "←"
+
+        "stderr" ->
+            "!"
+
+        _ ->
+            "·"
+
+
+typeLabel : Row -> String
+typeLabel row =
+    if row.dir == "stderr" then
+        "stderr"
+
+    else if row.subtype /= "" then
+        row.typ ++ "/" ++ row.subtype
+
+    else
+        row.typ
+
+
+{-| The last part of a document's path, which is what tells two apart in a
+narrow column; the whole path is in the detail pane.
+-}
+docName : String -> String
+docName doc =
+    String.split "/" doc
+        |> Array.last
+        |> Maybe.withDefault doc
+
+
+-- DETAIL
+
+
+viewDetail : Model -> Html Msg
+viewDetail model =
+    when model.detail is
+        Nothing_ ->
+            Html.p [ Attr.class "hint" ] [ Html.text "Choose a frame. The arrow keys walk the list." ]
+
+        Loading ->
+            Html.p [ Attr.class "hint" ] [ Html.text "Loading…" ]
+
+        Failed err ->
+            Html.p [ Attr.class "error" ] [ Html.text err ]
+
+        Loaded detail ->
+            Html.div []
+                [ viewFacts model detail
+                , Html.div [ Attr.class "view-switch" ]
+                    [ Html.button [ Attr.classList [ { class = "on", enabled = not model.raw } ], Events.onClick (SetRaw False) ] [ Html.text "Tree" ]
+                    , Html.button [ Attr.classList [ { class = "on", enabled = model.raw } ], Events.onClick (SetRaw True) ] [ Html.text "Raw" ]
+                    ]
+                , if model.raw then
+                    Html.pre [ Attr.class "raw" ] [ Html.text (Encode.encode 2 detail.raw) ]
+
+                  else
+                    Html.div [ Attr.class "tree" ]
+                        (Array.map viewLine (JsonTree.lines model.toggled detail.json))
+                ]
+
+
+viewFacts : Model -> Detail -> Html Msg
+viewFacts model detail =
+    let
+        p =
+            detail.process
+
+        frameLine =
+            fact "frame"
+                [ Html.text
+                    (String.join " · "
+                        [ "#" ++ String.fromInt detail.id
+                        , detail.dir
+                        , clock model.zone detail.ts
+                        ]
+                    )
+                ]
+
+        processLine =
+            fact "process"
+                [ Html.text
+                    (String.join " · "
+                        (Array.keepIf (\s -> s /= "")
+                            [ "#" ++ String.fromInt p.id ++ " " ++ p.role
+                            , "pid " ++ String.fromInt p.pid
+                            , p.doc
+                            , "session " ++ p.sessionId
+                            , if p.endReason /= "" then
+                                "stopped: " ++ p.endReason
+
+                              else
+                                ""
+                            , p.exitStatus
+                            ]
+                        )
+                    )
+                , Html.details [ Attr.class "argv" ]
+                    [ Html.summary [] [ Html.text "command line" ]
+                    , Html.pre [] [ Html.text (String.join " " (Array.map shellQuote p.argv)) ]
+                    , Html.p [] [ Html.text ("in " ++ p.cwd) ]
+                    ]
+                ]
+
+        turnLine =
+            when detail.turn is
+                Just t ->
+                    fact "turn"
+                        [ Html.text
+                            (String.join " · "
+                                (Array.keepIf (\s -> s /= "")
+                                    [ "#" ++ String.fromInt t.id
+                                    , t.purpose
+                                    , t.model
+                                    , if t.isError == Just True then
+                                        t.subtype ++ " (error)"
+
+                                      else
+                                        t.subtype
+                                    ]
+                                )
+                            )
+                        , Html.button [ Attr.class "link", Events.onClick (OnlyTurn (Just t.id)) ] [ Html.text "only this turn" ]
+                        , viewCost t
+                        ]
+
+                Nothing ->
+                    Html.text ""
+
+        toolLine =
+            if Array.isEmpty detail.tools then
+                Html.text ""
+
+            else
+                fact "tools" (Array.map (viewTool detail.id) detail.tools)
+    in
+    Html.dl [ Attr.class "facts" ] [ frameLine, processLine, turnLine, toolLine ]
+
+
+fact : String -> Array (Html Msg) -> Html Msg
+fact label content =
+    Html.div [ Attr.class "fact" ]
+        [ Html.dt [] [ Html.text label ]
+        , Html.dd [] content
+        ]
+
+
+{-| What the result frame reported. The cache figures are the ones to watch:
+they are where a long-lived process earns its keep.
+-}
+viewCost : Turn -> Html Msg
+viewCost t =
+    when t.cost is
+        Nothing ->
+            Html.div [ Attr.class "cost pending" ] [ Html.text "no result frame yet" ]
+
+        Just cost ->
+            let
+                count label value =
+                    when value is
+                        Just n ->
+                            [ Html.span [ Attr.class "metric" ]
+                                [ Html.span [ Attr.class "label" ] [ Html.text label ]
+                                , Html.text (tokens n)
+                                ]
+                            ]
+
+                        Nothing ->
+                            []
+
+                time label value =
+                    when value is
+                        Just ms ->
+                            [ Html.span [ Attr.class "metric" ]
+                                [ Html.span [ Attr.class "label" ] [ Html.text label ]
+                                , Html.text (duration ms)
+                                ]
+                            ]
+
+                        Nothing ->
+                            []
+            in
+            Html.div [ Attr.class "cost" ]
+                (Array.flatten
+                    [ [ Html.span [ Attr.class "dollars" ] [ Html.text (dollars cost) ] ]
+                    , count "in" t.inputTokens
+                    , count "out" t.outputTokens
+                    , count "cache read" t.cacheReadTokens
+                    , count "cache write" t.cacheCreationTokens
+                    , time "took" t.durationMs
+                    , time "API" t.durationApiMs
+                    , count "model calls" t.numTurns
+                    ]
+                )
+
+
+viewTool : Int -> ToolCall -> Html Msg
+viewTool here call =
+    let
+        jump label id =
+            if id == here then
+                Html.text label
+
+            else
+                Html.button [ Attr.class "link", Events.onClick (Select id) ] [ Html.text label ]
+    in
+    Html.div [ Attr.class "tool" ]
+        [ Html.span [ Attr.class "tool-name" ] [ Html.text call.name ]
+        , Html.text " "
+        , jump ("use #" ++ String.fromInt call.useFrame) call.useFrame
+        , Html.text " → "
+        , when call.resultFrame is
+            Just id ->
+                jump
+                    (if call.isError == Just True then
+                        "error #" ++ String.fromInt id
+
+                     else
+                        "result #" ++ String.fromInt id
+                    )
+                    id
+
+            Nothing ->
+                Html.text "no result"
+        , Html.span [ Attr.class "tool-id" ] [ Html.text call.id ]
+        ]
+
+
+viewLine : JsonTree.Line -> Html Msg
+viewLine line =
+    let
+        key =
+            when line.key is
+                Just k ->
+                    [ Html.span [ Attr.class "key" ] [ Html.text k ], Html.text ": " ]
+
+                Nothing ->
+                    []
+
+        indent =
+            Attr.style "padding-left" (String.fromInt (line.depth * 18) ++ "px")
+    in
+    when line.body is
+        Open o ->
+            Html.div [ Attr.class "line foldable", indent, Events.onClick (Toggle line.path) ]
+                (Array.flatten
+                    [ [ Html.span [ Attr.class "twisty" ]
+                            [ Html.text
+                                (if o.count == 0 then
+                                    " "
+
+                                 else if o.folded then
+                                    "▸"
+
+                                 else
+                                    "▾"
+                                )
+                            ]
+                      ]
+                    , key
+                    , if o.count == 0 then
+                        [ Html.text (o.bracket ++ closing o.bracket) ]
+
+                      else if o.folded then
+                        [ Html.text (o.bracket ++ "…" ++ closing o.bracket)
+                        , Html.span [ Attr.class "count" ] [ Html.text (" " ++ countLabel o.bracket o.count) ]
+                        ]
+
+                      else
+                        [ Html.text o.bracket ]
+                    ]
+                )
+
+        Close c ->
+            Html.div [ Attr.class "line", indent ] [ Html.span [ Attr.class "twisty" ] [ Html.text " " ], Html.text c ]
+
+        Leaf l ->
+            Html.div [ Attr.class "line", indent ]
+                (Array.flatten
+                    [ [ Html.span [ Attr.class "twisty" ] [ Html.text " " ] ]
+                    , key
+                    , [ Html.span [ Attr.class ("v-" ++ l.kind) ] [ Html.text l.text ] ]
+                    ]
+                )
+
+        Long l ->
+            Html.div [ Attr.class "line foldable", indent, Events.onClick (Toggle line.path) ]
+                (Array.flatten
+                    [ [ Html.span [ Attr.class "twisty" ]
+                            [ Html.text
+                                (if l.folded then
+                                    "▸"
+
+                                 else
+                                    "▾"
+                                )
+                            ]
+                      ]
+                    , key
+                    , if l.folded then
+                        [ Html.span [ Attr.class "v-string" ] [ Html.text ("\"" ++ l.first ++ "…\"") ]
+                        , Html.span [ Attr.class "count" ]
+                            [ Html.text (" " ++ String.fromInt l.lineCount ++ " lines, " ++ String.fromInt (String.count l.full) ++ " chars") ]
+                        ]
+
+                      else
+                        [ Html.pre [ Attr.class "v-long" ] [ Html.text l.full ] ]
+                    ]
+                )
+
+
+closing : String -> String
+closing bracket =
+    if bracket == "[" then
+        "]"
+
+    else
+        "}"
+
+
+countLabel : String -> Int -> String
+countLabel bracket n =
+    String.fromInt n
+        ++ (if bracket == "[" then
+                " items"
+
+            else
+                " keys"
+           )
+
+
+-- FORMATTING
+
+
+{-| Dollars to four places: a turn served from cache costs fractions of a cent,
+and two places would show most of them as nothing at all.
+-}
+dollars : Float -> String
+dollars amount =
+    let
+        tenThousandths =
+            Math.round (amount * 10000)
+
+        whole =
+            tenThousandths // 10000
+
+        frac =
+            Math.modBy 10000 tenThousandths
+    in
+    "$" ++ String.fromInt whole ++ "." ++ String.padLeft 4 '0' (String.fromInt frac)
+
+
+tokens : Int -> String
+tokens n =
+    if n >= 10000 then
+        oneDecimal (toFloat n / 1000) ++ "k"
+
+    else
+        String.fromInt n
+
+
+duration : Int -> String
+duration ms =
+    if ms < 1000 then
+        String.fromInt ms ++ "ms"
+
+    else
+        oneDecimal (toFloat ms / 1000) ++ "s"
+
+
+oneDecimal : Float -> String
+oneDecimal x =
+    let
+        tenths =
+            Math.round (x * 10)
+    in
+    String.fromInt (tenths // 10) ++ "." ++ String.fromInt (Math.modBy 10 tenths)
+
+
+{-| Wall-clock time to the millisecond, from the log's microseconds.
+-}
+clock : Time.Zone -> Int -> String
+clock zone micros =
+    let
+        t =
+            Time.millisToPosix (micros // 1000)
+
+        two n =
+            String.padLeft 2 '0' (String.fromInt n)
+    in
+    two (Time.toHour zone t)
+        ++ ":"
+        ++ two (Time.toMinute zone t)
+        ++ ":"
+        ++ two (Time.toSecond zone t)
+        ++ "."
+        ++ String.padLeft 3 '0' (String.fromInt (Time.toMillis zone t))
+
+
+{-| An argument as it would have to be typed, so the command line can be
+copied out and run by hand.
+-}
+shellQuote : String -> String
+shellQuote arg =
+    if arg /= "" && String.all (\c -> Char.isAlphaNum c || String.contains (String.fromChar c) "-_./=:,@") arg then
+        arg
+
+    else
+        "'" ++ String.replace "'" "'\\''" arg ++ "'"
+
+
+-- MAIN
+
+
+main : Program {} Model Msg
+main =
+    Browser.element
+        { init = init
+        , update = update
+        , view = view
+        , subscriptions = subscriptions
+        }

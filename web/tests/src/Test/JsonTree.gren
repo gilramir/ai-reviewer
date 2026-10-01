@@ -1,0 +1,139 @@
+module Test.JsonTree exposing (suites)
+
+{-| The wire log's detail pane: decoding a frame without losing the order its
+members were written in, and folding it into lines.
+-}
+
+import Expect
+import Json.Decode as Decode
+import JsonTree exposing (Body(..), Json(..))
+import Set
+import Task
+import Test.Runner.UnitNode as U
+
+
+expect : Expect.Expectation -> Task.Task String Expect.Expectation
+expect =
+    Task.succeed
+
+
+decode : String -> Json
+decode text =
+    when Decode.decodeString JsonTree.decoder text is
+        Ok json ->
+            json
+
+        Err _ ->
+            Null
+
+
+{-| What each line says, as compact text, so a test reads as the tree it
+expects.
+-}
+shape : Array JsonTree.Line -> Array String
+shape =
+    Array.map
+        (\line ->
+            let
+                key =
+                    when line.key is
+                        Just k ->
+                            k ++ ": "
+
+                        Nothing ->
+                            ""
+
+                body =
+                    when line.body is
+                        Open o ->
+                            if o.folded then
+                                o.bracket ++ "… " ++ String.fromInt o.count
+
+                            else
+                                o.bracket
+
+                        Close c ->
+                            c
+
+                        Leaf l ->
+                            l.text
+
+                        Long l ->
+                            if l.folded then
+                                "«" ++ l.first ++ "» " ++ String.fromInt l.lineCount
+
+                            else
+                                "«" ++ l.full ++ "»"
+            in
+            String.repeat line.depth "  " ++ key ++ body
+        )
+
+
+frame : String
+frame =
+    "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"content\":\"1\\tLine one.\\n2\\t\",\"is_error\":false}]},\"n\":null,\"cost\":0.04}"
+
+
+suites : Array U.Suite
+suites =
+    [ U.suite
+        { name = "JsonTree.lines"
+        , setUpSuite = U.noSuiteFixture
+        , tearDownSuite = U.noTearDown
+        , setUp = U.noFixture
+        , tearDown = U.noTearDown
+        , tests =
+            [ U.test "members stay in the order the CLI wrote them" <| \_ ->
+                -- Alphabetical would put "cost" above "type", and the first
+                -- thing to read in a frame is what kind of frame it is.
+                expect
+                    (Expect.equal
+                        [ "{"
+                        , "  type: \"user\""
+                        , "  message: {"
+                        , "    content: ["
+                        , "      0: {"
+                        , "        type: \"tool_result\""
+                        , "        content: «1\tLine one.» 2"
+                        , "        is_error: false"
+                        , "      }"
+                        , "    ]"
+                        , "  }"
+                        , "  n: null"
+                        , "  cost: 0.04"
+                        , "}"
+                        ]
+                        (shape (JsonTree.lines Set.empty (decode frame)))
+                    )
+            , U.test "a toggled container folds to a count" <| \_ ->
+                expect
+                    (Expect.equal
+                        [ "{", "  type: \"user\"", "  message: {… 1", "  n: null", "  cost: 0.04", "}" ]
+                        (shape (JsonTree.lines (Set.singleton "$\tmessage") (decode frame)))
+                    )
+            , U.test "a toggled long string unfolds into its real lines" <| \_ ->
+                expect
+                    (Expect.equal
+                        (Just "        content: «1\tLine one.\n2\t»")
+                        (JsonTree.lines (Set.singleton "$\tmessage\tcontent\t0\tcontent") (decode frame)
+                            |> shape
+                            |> Array.get 6
+                        )
+                    )
+            , U.test "a short string is a leaf" <| \_ ->
+                expect (Expect.equal [ "\"Line two.\"" ] (shape (JsonTree.lines Set.empty (decode "\"Line two.\""))))
+            , U.test "a string past one line's width is long even without a break" <| \_ ->
+                let
+                    wide =
+                        String.repeat 200 "x"
+                in
+                expect
+                    (Expect.equal
+                        [ "«" ++ String.repeat 160 "x" ++ "» 1" ]
+                        (shape (JsonTree.lines Set.empty (Str wide)))
+                    )
+            , U.test "an empty container is one line" <| \_ ->
+                expect (Expect.equal [ "{", "  a: [… 0", "}" ] (shape (JsonTree.lines Set.empty (decode "{\"a\":[]}"))))
+            ]
+        }
+    ]

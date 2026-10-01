@@ -1,0 +1,178 @@
+/* The wire log viewer. The palette is the review's, so the two read as one
+   tool; the type is not, because everything here is data and lines up in
+   columns. */
+:root {
+  color-scheme: light dark;
+
+  --bg: light-dark(#fbfaf7, #16151a);
+  --paper: light-dark(#fff, #1d1c22);
+  --ink: light-dark(#1c1b19, #e8e5df);
+  --muted: light-dark(#6b675f, #9b958a);
+  --rule: light-dark(#e3ded4, #33313a);
+  --accent: light-dark(#7a4b1e, #d3a06a);
+  --selected: light-dark(#f6e7cf, #3d3020);
+  --in: light-dark(#eef3fb, #1c2230);
+  --stderr: light-dark(#fbeeea, #2e1d1a);
+  --danger: light-dark(#a3341f, #e0745c);
+  --string: light-dark(#2f6b3a, #9ccc8a);
+  --number: light-dark(#1f4f8f, #8ab4e8);
+  --keyword: light-dark(#7a2f7a, #d49ad4);
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--ink);
+  font: 13px/1.45 system-ui, sans-serif;
+}
+
+/* Two panes, as in a packet viewer. The list can be dragged taller from its
+   bottom edge; the detail takes whatever is left. */
+.log { display: flex; flex-direction: column; height: 100vh; }
+
+.bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.9rem;
+  padding: 0.45rem 0.8rem;
+  border-bottom: 1px solid var(--rule);
+  background: var(--paper);
+}
+.bar .title { font-weight: 600; }
+.bar select, .bar input[type="search"] {
+  font: inherit;
+  padding: 0.15rem 0.4rem;
+  border: 1px solid var(--rule);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--ink);
+}
+.bar input[type="search"] { width: 14rem; }
+.bar .check { display: inline-flex; align-items: center; gap: 0.25rem; color: var(--muted); }
+.bar .totals { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
+.bar .error, .detail .error { color: var(--danger); }
+
+.chip {
+  font: inherit;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  background: none;
+  border-radius: 999px;
+  padding: 0 0.5rem;
+  cursor: pointer;
+}
+
+.list {
+  height: 45vh;
+  min-height: 6rem;
+  overflow: auto;
+  resize: vertical;
+  border-bottom: 3px double var(--rule);
+  outline: none;
+}
+
+table { border-collapse: collapse; width: 100%; font-family: var(--mono); font-size: 12px; }
+thead th {
+  position: sticky;
+  top: 0;
+  background: var(--paper);
+  text-align: left;
+  font-family: system-ui, sans-serif;
+  font-weight: 600;
+  color: var(--muted);
+  border-bottom: 1px solid var(--rule);
+  padding: 0.2rem 0.5rem;
+  white-space: nowrap;
+}
+td { padding: 0.08rem 0.5rem; white-space: nowrap; }
+td.summary { overflow: hidden; text-overflow: ellipsis; max-width: 0; width: 100%; }
+td.doc { max-width: 12rem; overflow: hidden; text-overflow: ellipsis; }
+.num { text-align: right; font-variant-numeric: tabular-nums; }
+td.dir { text-align: center; color: var(--muted); }
+tbody tr { cursor: default; }
+tbody tr:hover { background: color-mix(in srgb, var(--selected) 45%, transparent); }
+
+/* Colour by direction, faintly: what the daemon sent stands apart from what
+   came back, and stderr and the daemon's own notes recede. */
+tr.dir-in { background: var(--in); }
+tr.dir-stderr { background: var(--stderr); }
+tr.dir-daemon, tr.type-rate_limit_event { color: var(--muted); }
+tr.type-result { font-weight: 600; }
+tbody tr.selected, tbody tr.selected:hover { background: var(--selected); }
+.list:focus tbody tr.selected { outline: 1px solid var(--accent); outline-offset: -1px; }
+
+.detail { flex: 1; overflow: auto; padding: 0.6rem 0.9rem 3rem; }
+.hint { color: var(--muted); }
+
+.facts { margin: 0 0 0.6rem; }
+.fact { display: grid; grid-template-columns: 5.5rem 1fr; gap: 0.6rem; padding: 0.15rem 0; }
+.fact dt { color: var(--muted); }
+.fact dd { margin: 0; }
+.argv summary { color: var(--muted); cursor: pointer; font-size: 12px; }
+.argv pre { white-space: pre-wrap; word-break: break-all; font-family: var(--mono); font-size: 12px; margin: 0.25rem 0; }
+.argv p { margin: 0; color: var(--muted); font-size: 12px; }
+
+button.link {
+  font: inherit;
+  background: none;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 0 0.3rem;
+  text-decoration: underline;
+}
+
+.cost { display: flex; flex-wrap: wrap; gap: 0.3rem 1rem; margin-top: 0.2rem; font-variant-numeric: tabular-nums; }
+.cost .dollars { font-weight: 700; font-size: 15px; }
+.cost .metric .label { color: var(--muted); margin-right: 0.3rem; }
+.cost.pending { color: var(--muted); }
+
+.tool { font-family: var(--mono); font-size: 12px; }
+.tool-name { font-weight: 600; }
+.tool-id { color: var(--muted); margin-left: 0.8rem; }
+
+.view-switch { display: flex; gap: 0; margin: 0.4rem 0; }
+.view-switch button {
+  font: inherit;
+  border: 1px solid var(--rule);
+  background: var(--paper);
+  color: var(--muted);
+  padding: 0.1rem 0.7rem;
+  cursor: pointer;
+}
+.view-switch button:first-child { border-radius: 5px 0 0 5px; }
+.view-switch button:last-child { border-radius: 0 5px 5px 0; border-left: none; }
+.view-switch button.on { color: var(--ink); background: var(--selected); }
+
+.tree, .raw { font-family: var(--mono); font-size: 12px; }
+.raw { white-space: pre-wrap; word-break: break-word; margin: 0; }
+.line { white-space: pre-wrap; word-break: break-word; }
+.line.foldable { cursor: pointer; }
+.line.foldable:hover { background: color-mix(in srgb, var(--selected) 45%, transparent); }
+.twisty { display: inline-block; width: 1.1em; color: var(--muted); }
+.key { color: var(--accent); }
+.count { color: var(--muted); }
+.v-string { color: var(--string); }
+.v-number { color: var(--number); }
+.v-bool, .v-null { color: var(--keyword); }
+
+/* A long string unfolded is the text as it was: its own line breaks, set off
+   from the tree so where it starts and stops is plain. */
+.v-long {
+  margin: 0.2rem 0 0.3rem 1.1em;
+  padding: 0.4rem 0.6rem;
+  border-left: 3px solid var(--rule);
+  background: var(--paper);
+  color: var(--string);
+  white-space: pre-wrap;
+  word-break: break-word;
+  cursor: text;
+}

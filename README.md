@@ -64,6 +64,18 @@ The password is new on every start. For one that survives restarts, run
 
 `ai-reviewer serve --help` lists the flags with their defaults.
 
+To see exactly what passed between the daemon and Claude, and what each turn
+cost, start with `--claude-log`. Every frame is recorded in
+`.ai-reviewer/claude.db`, and
+
+```sh
+ai-reviewer log-view .ai-reviewer/claude.db
+```
+
+serves a page for reading it on `127.0.0.1:8081`: one frame per line above, the
+selected one as a JSON tree below. The log holds every file the model read, so
+it is readable by you alone and the viewer listens on loopback only.
+
 ## Reviewing
 
 **Choosing a document.** The top bar names the document you are reading.
@@ -218,8 +230,8 @@ each file before a turn changes it instead.
 `.ai-reviewer/` is created beside `.git` (or in the review root, outside a
 repository). It holds `state.json` — threads, each document's Claude session
 and spend, the review branch, the chosen model — and, outside a repository, the
-snapshots. **Add it to your `.gitignore`**: it will sit in `git status` until
-you do.
+snapshots, and the wire log if you asked for one. **Add it to your
+`.gitignore`**: it will sit in `git status` until you do.
 
 `review.md` lives there too, if you wrote one. It is the one file in the
 directory that is yours rather than the daemon's: the standing brief every

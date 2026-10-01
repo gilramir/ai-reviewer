@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>claude wire log</title>
+<link rel="stylesheet" href="/static/log.css">
+<script>
+// The theme chosen in the review, so the log reads the same way round. Storage
+// throws in a browser set to refuse it, which is not a reason to fail to render.
+try {
+  var saved = window.localStorage.getItem("ai-reviewer.theme");
+  if (saved === "light" || saved === "dark") {
+    document.documentElement.dataset.theme = saved;
+  }
+} catch (err) {}
+</script>
+</head>
+<body>
+<div id="root"></div>
+<script src="/dist/log.js"></script>
+<script>Gren.LogView.init({ node: document.getElementById("root"), flags: {} });</script>
+</body>
+</html>

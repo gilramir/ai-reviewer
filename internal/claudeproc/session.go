@@ -43,6 +43,11 @@ type Config struct {
 	MaxBudgetUSD float64
 	// Env, when non-nil, replaces the child's environment.
 	Env []string
+	// Role names the kind of conversation, for the wire log: "reviewer" or
+	// "critic".
+	Role string
+	// Tap, when non-nil, sees every byte crossing each process's pipes.
+	Tap Tap
 }
 
 func (c *Config) applyDefaults() {
@@ -110,6 +115,7 @@ type Session struct {
 	stdin   io.WriteCloser
 	frames  chan streamFrame
 	stderr  *ring
+	tap     ProcessTap
 	started bool
 	// everStarted records that the CLI has seen this session id at least once,
 	// which is what decides between --session-id and --resume.
@@ -146,14 +152,14 @@ func (s *Session) Ask(ctx context.Context, prompt string, emit func(Event)) (Tur
 		return TurnResult{}, err
 	}
 
-	if err := s.send(prompt); err != nil {
+	if err := s.send(ctx, prompt); err != nil {
 		// The most likely cause is a process that exited between turns. Restart
 		// once, resuming the same conversation, before giving up.
-		s.stop()
+		s.stop("send failed: " + err.Error())
 		if err := s.ensureStarted(ctx); err != nil {
 			return TurnResult{}, err
 		}
-		if err := s.send(prompt); err != nil {
+		if err := s.send(ctx, prompt); err != nil {
 			return TurnResult{}, fmt.Errorf("send prompt: %w", err)
 		}
 	}
@@ -163,7 +169,7 @@ func (s *Session) Ask(ctx context.Context, prompt string, emit func(Event)) (Tur
 		if err := s.ensureStarted(ctx); err != nil {
 			return TurnResult{}, err
 		}
-		if err := s.send(prompt); err != nil {
+		if err := s.send(ctx, prompt); err != nil {
 			return TurnResult{}, fmt.Errorf("send prompt: %w", err)
 		}
 		return s.readTurn(ctx, emit)
@@ -208,13 +214,20 @@ func (s *Session) recoverSessionMode(err error) bool {
 // killing is unambiguous and needs no undocumented framing; the cost is losing
 // the partial turn, which is what the reviewer asked for anyway.
 func (s *Session) Interrupt() {
-	s.stop()
+	s.stop("interrupted")
 }
 
 // Close shuts the process down. The conversation survives on disk and can be
 // resumed by constructing a Session with the same id.
 func (s *Session) Close() error {
-	s.stop()
+	return s.closeFor("closed")
+}
+
+// closeFor is Close with the reason the wire log should give. The manager has
+// four reasons to close a session, and from the log they would otherwise be
+// indistinguishable from each other and from a crash.
+func (s *Session) closeFor(reason string) error {
+	s.stop(reason)
 	return nil
 }
 
@@ -262,7 +275,7 @@ func (s *Session) RunningModel() string {
 
 func (s *Session) ensureStarted(ctx context.Context) error {
 	if s.takeRestart() {
-		s.stop()
+		s.stop("model changed")
 	}
 
 	s.mu.Lock()
@@ -313,9 +326,22 @@ func (s *Session) startLocked(ctx context.Context) error {
 		return fmt.Errorf("start %s: %w", s.cfg.Binary, err)
 	}
 
+	var tap ProcessTap = noTap{}
+	if s.cfg.Tap != nil {
+		tap = s.cfg.Tap.Spawn(Spawn{
+			Role:      s.cfg.Role,
+			SessionID: s.ID,
+			Doc:       turnLabel(ctx).Doc,
+			Argv:      append([]string{s.cfg.Binary}, args...),
+			Dir:       cmd.Dir,
+			PID:       cmd.Process.Pid,
+		})
+	}
+
 	s.cmd = cmd
 	s.stdin = stdin
 	s.stderr = newRing(8 << 10)
+	s.tap = tap
 	s.started = true
 
 	// A json.Decoder rather than a bufio.Scanner: single frames routinely run to
@@ -329,14 +355,14 @@ func (s *Session) startLocked(ctx context.Context) error {
 	// it outright ("JSON decoder out of sync").
 	frames := make(chan streamFrame, 64)
 	s.frames = frames
-	go readFrames(dec, frames)
+	go readFrames(dec, frames, tap)
 
-	go s.drainStderr(stderrPipe)
+	go s.drainStderr(stderrPipe, tap)
 
 	// Reap the child so a long-running daemon does not accumulate zombies.
 	// Nothing waits on this: the frames channel closing is what tells a turn
 	// the process has stopped talking.
-	go func() { _ = cmd.Wait() }()
+	go func() { tap.Exited(cmd.Wait()) }()
 
 	return nil
 }
@@ -381,10 +407,11 @@ func (s *Session) resumable() bool {
 	return s.everStarted
 }
 
-func (s *Session) send(prompt string) error {
+func (s *Session) send(ctx context.Context, prompt string) error {
 	s.mu.Lock()
 	stdin := s.stdin
 	started := s.started
+	tap := s.tap
 	s.mu.Unlock()
 
 	if !started || stdin == nil {
@@ -399,6 +426,9 @@ func (s *Session) send(prompt string) error {
 	if err != nil {
 		return err
 	}
+	// Logged before the write, so the turn exists by the time the first frame
+	// of the reply could arrive to be filed under it.
+	tap.In(turnLabel(ctx), line)
 	if _, err := stdin.Write(append(line, '\n')); err != nil {
 		return err
 	}
@@ -411,11 +441,24 @@ func (s *Session) send(prompt string) error {
 
 // readFrames decodes stdout until the stream ends, then closes the channel to
 // signal that the process is done talking.
-func readFrames(dec *json.Decoder, out chan<- streamFrame) {
+//
+// Each frame is taken whole first and only then picked apart, so the tap sees
+// the bytes the CLI wrote rather than the handful of fields streamFrame keeps.
+func readFrames(dec *json.Decoder, out chan<- streamFrame, tap ProcessTap) {
 	defer close(out)
 	for {
+		var raw json.RawMessage
+		if err := dec.Decode(&raw); err != nil {
+			if !errors.Is(err, io.EOF) {
+				tap.Note("decode", err.Error())
+			}
+			return
+		}
+		tap.Out(raw)
+
 		var msg streamFrame
-		if err := dec.Decode(&msg); err != nil {
+		if err := json.Unmarshal(raw, &msg); err != nil {
+			tap.Note("decode", err.Error())
 			return
 		}
 		out <- msg
@@ -441,12 +484,12 @@ func (s *Session) readTurn(ctx context.Context, emit func(Event)) (TurnResult, e
 			// Leaving a half-read turn in the stream would desynchronise every
 			// turn after it, so an abandoned turn takes the process with it.
 			// The conversation is resumed from disk on the next Ask.
-			s.stop()
+			s.stop("turn abandoned: " + ctx.Err().Error())
 			return result, ctx.Err()
 
 		case msg, ok := <-frames:
 			if !ok {
-				s.stop()
+				s.stop("exited mid-turn")
 				return result, fmt.Errorf("claude exited mid-turn: %s", s.stderrTail())
 			}
 			if done := s.applyFrame(msg, &result, seen, emit); done {
@@ -516,11 +559,12 @@ func isWriteTool(name string) bool {
 	return false
 }
 
-func (s *Session) drainStderr(r io.Reader) {
+func (s *Session) drainStderr(r io.Reader, tap ProcessTap) {
 	buf := make([]byte, 4<<10)
 	for {
 		n, err := r.Read(buf)
 		if n > 0 {
+			tap.Stderr(buf[:n])
 			s.mu.Lock()
 			if s.stderr != nil {
 				s.stderr.Write(buf[:n])
@@ -546,12 +590,17 @@ func (s *Session) stderrTail() string {
 	return tail
 }
 
-func (s *Session) stop() {
+// stop kills the process, if there is one, giving the wire log the reason.
+func (s *Session) stop(reason string) {
 	s.mu.Lock()
-	cmd, stdin := s.cmd, s.stdin
-	s.cmd, s.stdin, s.frames = nil, nil, nil
+	cmd, stdin, tap := s.cmd, s.stdin, s.tap
+	s.cmd, s.stdin, s.frames, s.tap = nil, nil, nil, nil
 	s.started = false
 	s.mu.Unlock()
+
+	if cmd != nil && tap != nil {
+		tap.Note("stop", reason)
+	}
 
 	if stdin != nil {
 		_ = stdin.Close()

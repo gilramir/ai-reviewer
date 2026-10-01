@@ -220,6 +220,7 @@ func (r *Review) reviewSection(ctx context.Context, session *claudeproc.Session,
 
 	turn, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
+	turn = claudeproc.WithTurnLabel(turn, claudeproc.TurnLabel{Doc: docPath, Purpose: "critic: " + section.Title})
 
 	result, err := session.Ask(turn, prompt, nil)
 	r.noteTurnCost(docPath, result.Model, result.CostUSD)

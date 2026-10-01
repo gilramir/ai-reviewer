@@ -88,6 +88,20 @@ func Open(root string) (History, error) {
 	return &gitHistory{root: top}, nil
 }
 
+// Workspace is the directory Open would choose as the History's Root, for a
+// caller that needs to know it before there is a History: the repository top
+// level, or root itself outside a repository.
+func Workspace(root string) (string, error) {
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return "", err
+	}
+	if top, err := gitTopLevel(abs); err == nil {
+		return top, nil
+	}
+	return abs, nil
+}
+
 func gitTopLevel(dir string) (string, error) {
 	var out bytes.Buffer
 	cmd := exec.Command("git", "rev-parse", "--show-toplevel")

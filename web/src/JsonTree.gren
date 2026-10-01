@@ -1,0 +1,167 @@
+module JsonTree exposing
+    ( Body(..)
+    , Json(..)
+    , Line
+    , decoder
+    , lines
+    , rootPath
+    )
+
+{-| A JSON value as a tree of foldable lines, for the wire log's detail pane.
+
+The frames worth reading are the ones holding a whole file in one string, a
+`tool_result` or an `Edit`'s `old_string`. Raw JSON shows those as a single line
+of `\n` escapes several screens wide, which is the reason this exists: a long
+string starts folded to its first line, and unfolds into its real line breaks.
+
+Pure and importing only core, so it is tested under node with `Marks` and
+`Picker`.
+
+-}
+
+import Array exposing (Array)
+import Json.Decode as Decode exposing (Decoder)
+import Set exposing (Set)
+
+
+type Json
+    = Null
+    | Bool Bool
+    | Number Float
+    | Str String
+    | List (Array Json)
+    | Object (Array { key : String, value : Json })
+
+
+{-| Decodes any JSON. Objects keep their members in the order they were
+written, which is the CLI's order: `type` first, then whatever it thought
+mattered next.
+-}
+decoder : Decoder Json
+decoder =
+    Decode.oneOf
+        [ Decode.null Null
+        , Decode.map Bool Decode.bool
+        , Decode.map Number Decode.float
+        , Decode.map Str Decode.string
+        , Decode.map List (Decode.array (Decode.lazy (\{} -> decoder)))
+        , Decode.map Object (Decode.keyValuePairs (Decode.lazy (\{} -> decoder)))
+        ]
+
+
+{-| One line of the tree as drawn.
+
+`path` names the value the line belongs to, and is what a click toggles. It is
+never shown, and only has to be unique within one frame.
+
+-}
+type alias Line =
+    { depth : Int
+    , path : String
+    , key : Maybe String
+    , body : Body
+    }
+
+
+type Body
+    = Open { bracket : String, count : Int, folded : Bool }
+    | Close String
+    | Leaf { text : String, kind : String }
+    | Long { first : String, full : String, lineCount : Int, folded : Bool }
+
+
+rootPath : String
+rootPath =
+    "$"
+
+
+{-| Flattens a value into lines. `toggled` holds the paths the reader has
+clicked, each of which flips its value away from how it starts out: containers
+open, long strings folded.
+-}
+lines : Set String -> Json -> Array Line
+lines toggled json =
+    linesAt toggled 0 rootPath Nothing json
+
+
+linesAt : Set String -> Int -> String -> Maybe String -> Json -> Array Line
+linesAt toggled depth path key json =
+    let
+        line body =
+            { depth = depth, path = path, key = key, body = body }
+
+        container bracket closing children =
+            let
+                folded =
+                    Set.member path toggled
+            in
+            if folded || Array.isEmpty children then
+                [ line (Open { bracket = bracket, count = Array.length children, folded = True }) ]
+
+            else
+                Array.flatten
+                    [ [ line (Open { bracket = bracket, count = Array.length children, folded = False }) ]
+                    , Array.mapAndFlatten
+                        (\child -> linesAt toggled (depth + 1) (path ++ "\t" ++ child.key) (Just child.key) child.value)
+                        children
+                    , [ { depth = depth, path = path, key = Nothing, body = Close closing } ]
+                    ]
+    in
+    when json is
+        Null ->
+            [ line (Leaf { text = "null", kind = "null" }) ]
+
+        Bool b ->
+            [ line
+                (Leaf
+                    { text =
+                        if b then
+                            "true"
+
+                        else
+                            "false"
+                    , kind = "bool"
+                    }
+                )
+            ]
+
+        Number n ->
+            [ line (Leaf { text = String.fromFloat n, kind = "number" }) ]
+
+        Str s ->
+            if isLong s then
+                let
+                    split =
+                        String.lines s
+                in
+                [ line
+                    (Long
+                        { first = Array.first split |> Maybe.withDefault "" |> String.takeFirst firstLineChars
+                        , full = s
+                        , lineCount = Array.length split
+                        , folded = not (Set.member path toggled)
+                        }
+                    )
+                ]
+
+            else
+                [ line (Leaf { text = "\"" ++ s ++ "\"", kind = "string" }) ]
+
+        List items ->
+            container "[" "]" (Array.indexedMap (\i v -> { key = String.fromInt i, value = v }) items)
+
+        Object members ->
+            container "{" "}" members
+
+
+{-| A string is long when it would not read comfortably on one line: it has a
+line break in it, or it runs past what fits beside its key.
+-}
+isLong : String -> Bool
+isLong s =
+    String.contains "\n" s || String.count s > firstLineChars
+
+
+firstLineChars : Int
+firstLineChars =
+    160

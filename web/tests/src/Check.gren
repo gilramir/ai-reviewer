@@ -7,7 +7,8 @@ testing. `Marks` decides where a reviewer's comment is shown in a document, and
 every bug in that area so far has been a whitespace or offset question rather
 than anything to do with the DOM. `Picker` decides which documents a typed query
 leaves and where the arrow keys land in them, which is arithmetic over a list
-that changes underneath the cursor.
+that changes underneath the cursor. `JsonTree` folds a wire-log frame into the
+lines its detail pane draws.
 
 Two platforms meet in this directory. `web/` is a browser application and this
 is a node one, which is fine as long as the modules under test import nothing
@@ -18,6 +19,7 @@ the source path and already has a `Main`.
 -}
 
 import Node
+import Test.JsonTree
 import Test.Marks
 import Test.Picker
 import Test.Runner.UnitNode as U
@@ -28,5 +30,5 @@ main =
     U.run
         { name = "ai-reviewer-web-tests"
         , version = "1.0.0"
-        , suites = Array.append Test.Marks.suites Test.Picker.suites
+        , suites = Array.flatten [ Test.Marks.suites, Test.Picker.suites, Test.JsonTree.suites ]
         }

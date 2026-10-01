@@ -21,9 +21,13 @@ import (
 	"github.com/gilramir/argparse/v2"
 	"golang.org/x/term"
 
+	"github.com/gilramir/ai-reviewer/internal/claudeproc"
 	"github.com/gilramir/ai-reviewer/internal/config"
+	"github.com/gilramir/ai-reviewer/internal/gitstore"
+	"github.com/gilramir/ai-reviewer/internal/logview"
 	"github.com/gilramir/ai-reviewer/internal/review"
 	"github.com/gilramir/ai-reviewer/internal/server"
+	"github.com/gilramir/ai-reviewer/internal/wirelog"
 )
 
 // version is reported by --version.
@@ -37,17 +41,33 @@ const defaultListen = "127.0.0.1:8080"
 // in by deriving each field name from its switch, so --max-budget-usd lands in
 // MaxBudgetUsd; the parser fails at startup if a switch has no matching field.
 type serveOptions struct {
-	Root         string
-	Listen       string
-	ListenAll    string
-	Branch       string
-	NoAuth       bool
-	Model        string
-	Claude       string
-	MaxBudgetUsd float64
-	IdleTimeout  time.Duration
-	MaxLive      int
+	Root          string
+	Listen        string
+	ListenAll     string
+	Branch        string
+	NoAuth        bool
+	Model         string
+	Claude        string
+	MaxBudgetUsd  float64
+	IdleTimeout   time.Duration
+	MaxLive       int
+	ClaudeLog     bool
+	ClaudeLogFile string
 }
+
+// logViewOptions holds the flags for the log-view subcommand.
+type logViewOptions struct {
+	File   string
+	Listen string
+}
+
+// defaultLogListen sits beside the review's own default port, so a review and
+// its log can be open at once without either flag.
+const defaultLogListen = "127.0.0.1:8081"
+
+// defaultLogName is where --claude-log writes: beside the review's state, which
+// is already kept out of the repository.
+const defaultLogName = "claude.db"
 
 // passwordOptions has no flags of its own, but argparse wants a value struct
 // for every command.
@@ -69,6 +89,7 @@ the network without a word. --listen-all never is.`,
 
 	addServeCommand(ap)
 	addPasswordCommand(ap)
+	addLogViewCommand(ap)
 
 	// With no subcommand the root has no Function, so argparse prints the help
 	// and exits non-zero, which is the behaviour we want for a bare invocation.
@@ -140,6 +161,39 @@ func addServeCommand(ap *argparse.ArgumentParser) {
 		MetaVar:  "N",
 		Help:     "Maximum concurrent claude processes",
 	})
+	// Two switches rather than one taking an optional value, which argparse
+	// does not offer for a switch: the common case needs no path, and naming
+	// one is enough to say the log is wanted.
+	cmd.Add(&argparse.Argument{
+		Switches: []string{"--claude-log"},
+		Help: "Record every frame exchanged with claude in a SQLite file, " +
+			".ai-reviewer/" + defaultLogName + " at the workspace root",
+	})
+	cmd.Add(&argparse.Argument{
+		Switches: []string{"--claude-log-file"},
+		MetaVar:  "FILE",
+		Help:     "Like --claude-log, writing to FILE instead",
+	})
+}
+
+func addLogViewCommand(ap *argparse.ArgumentParser) {
+	opts := &logViewOptions{Listen: defaultLogListen}
+	cmd := ap.New(&argparse.Command{
+		Name:        "log-view",
+		Description: "Serve a page for reading a log written by serve --claude-log",
+		Function:    runLogView,
+		Values:      opts,
+	})
+	cmd.Add(&argparse.Argument{
+		Name:    "file",
+		MetaVar: "FILE",
+		Help:    "The log to read",
+	})
+	cmd.Add(&argparse.Argument{
+		Switches: []string{"--listen"},
+		MetaVar:  "ADDR",
+		Help:     "Address to bind; loopback only",
+	})
 }
 
 func addPasswordCommand(ap *argparse.ArgumentParser) {
@@ -175,6 +229,17 @@ func runServe(_ *argparse.Command, values argparse.Values) error {
 		return err
 	}
 
+	var tap claudeproc.Tap
+	var logPath string
+	if opts.ClaudeLog || opts.ClaudeLogFile != "" {
+		log, path, err := openClaudeLog(opts.Root, opts.ClaudeLogFile)
+		if err != nil {
+			return err
+		}
+		defer log.Close()
+		tap, logPath = log, path
+	}
+
 	rev, err := review.New(review.Options{
 		Root:         opts.Root,
 		Branch:       branchName,
@@ -183,6 +248,7 @@ func runServe(_ *argparse.Command, values argparse.Values) error {
 		MaxBudgetUSD: opts.MaxBudgetUsd,
 		IdleTimeout:  opts.IdleTimeout,
 		MaxLive:      opts.MaxLive,
+		Tap:          tap,
 	})
 	if err != nil {
 		return err
@@ -210,6 +276,9 @@ func runServe(_ *argparse.Command, values argparse.Values) error {
 	}()
 
 	announce(listen, branchName, rev.Root(), rev.WorkRoot(), secret, auth == nil)
+	if logPath != "" {
+		fmt.Printf("    claude log %s\n      read it  ai-reviewer log-view %s\n\n", logPath, logPath)
+	}
 
 	// Printed after the banner so it is the last thing on screen, not the
 	// first thing scrolled away by it.
@@ -234,6 +303,70 @@ func runServe(_ *argparse.Command, values argparse.Values) error {
 	// committed while the daemon was stopping is in the count below.
 	_ = rev.Close()
 	fmt.Print(landing(rev.Settings()))
+	return nil
+}
+
+// openClaudeLog creates the wire log, at the default place when no file was
+// named. The default is under the workspace rather than --root because that is
+// where the review keeps everything else it writes, and what .gitignore covers.
+func openClaudeLog(root, path string) (*wirelog.Log, string, error) {
+	if path == "" {
+		work, err := gitstore.Workspace(root)
+		if err != nil {
+			return nil, "", err
+		}
+		dir := filepath.Join(work, ".ai-reviewer")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, "", err
+		}
+		path = filepath.Join(dir, defaultLogName)
+	}
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return nil, "", err
+	}
+	log, err := wirelog.Create(path, wirelog.Run{Root: absRoot, Version: version})
+	if err != nil {
+		return nil, "", fmt.Errorf("claude log: %w", err)
+	}
+	return log, path, nil
+}
+
+// runLogView serves the viewer for a wire log. It can run while the serve that
+// writes the log is still going, and the page follows along.
+func runLogView(_ *argparse.Command, values argparse.Values) error {
+	opts := values.(*logViewOptions)
+
+	if !server.IsLoopback(opts.Listen) {
+		return fmt.Errorf("log-view serves without a password, so only on a loopback address; %q is reachable from the network. Use an SSH tunnel to read it from elsewhere", opts.Listen)
+	}
+
+	log, err := wirelog.OpenReader(opts.File)
+	if err != nil {
+		return err
+	}
+	defer log.Close()
+
+	httpServer := &http.Server{
+		Addr:              opts.Listen,
+		Handler:           logview.Handler(log),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	go func() {
+		<-ctx.Done()
+		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = httpServer.Shutdown(shutdown)
+	}()
+
+	fmt.Printf("\n  ai-reviewer log-view\n\n    reading  %s\n    open     %s\n\n", opts.File, server.DisplayURL(opts.Listen, false))
+
+	if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
 	return nil
 }
 

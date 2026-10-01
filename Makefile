@@ -34,14 +34,17 @@ build: web
 	$(GO) build $(GOFLAGS) -o $(BIN) ./cmd/ai-reviewer
 
 # The Gren output is embedded into the binary, so a built ai-reviewer needs
-# neither gren nor node on the machine that serves the review.
+# neither gren nor node on the machine that serves the review. Two programs
+# share the sources: the review, and the wire log viewer behind log-view.
 .PHONY: web
 web:
 	cd web && $(GREN) make Main --optimize --output=dist/app.js
+	cd web && $(GREN) make LogView --optimize --output=dist/log.js
 
 .PHONY: web-debug
 web-debug:
 	cd web && $(GREN) make Main --output=dist/app.js
+	cd web && $(GREN) make LogView --output=dist/log.js
 
 .PHONY: test
 test: web-test
@@ -88,7 +91,7 @@ run: build
 
 .PHONY: clean
 clean:
-	rm -rf bin web/dist/app.js web/.gren web/tests/app web/tests/.gren
+	rm -rf bin web/dist/app.js web/dist/log.js web/.gren web/tests/app web/tests/.gren
 
 # tools reports what is installed against what versions.mk expects, and says how
 # to get each one either way.

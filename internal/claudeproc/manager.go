@@ -122,7 +122,7 @@ func (m *Manager) Forget(docPath string) {
 	m.mu.Unlock()
 
 	if s != nil {
-		_ = s.Close()
+		_ = s.closeFor("forgotten")
 	}
 }
 
@@ -139,7 +139,7 @@ func (m *Manager) Close() {
 	m.mu.Unlock()
 
 	for _, s := range sessions {
-		_ = s.Close()
+		_ = s.closeFor("shutdown")
 	}
 }
 
@@ -160,7 +160,7 @@ func (m *Manager) evictLocked() {
 		return live[i].Idle() > live[j].Idle()
 	})
 	for _, s := range live[:len(live)-m.maxLive] {
-		_ = s.Close()
+		_ = s.closeFor("evicted: too many live processes")
 	}
 }
 
@@ -176,7 +176,7 @@ func (m *Manager) reap() {
 			m.mu.Lock()
 			for _, s := range m.sessions {
 				if s.Running() && s.Idle() > m.idleTimeout {
-					_ = s.Close()
+					_ = s.closeFor("idle timeout")
 				}
 			}
 			m.mu.Unlock()

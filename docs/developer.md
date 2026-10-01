@@ -56,7 +56,7 @@ out beforehand.
 ## Layout
 
 ```
-cmd/ai-reviewer/      CLI: serve, password
+cmd/ai-reviewer/      CLI: serve, password, log-view
 internal/mdast/       goldmark -> JSON AST with source spans
 internal/review/      documents, threads, anchoring, assets, turn lifecycle;
                       critic.go is the pass that raises comments of its own
@@ -65,10 +65,15 @@ internal/claudeproc/  the long-lived claude process, one per document
 internal/gitstore/    one commit per turn; snapshots outside a repo
 internal/textdiff/    which words a document gained, for the change highlight
 internal/server/      HTTP, auth, WebSocket
+internal/wirelog/     the claude wire log: SQLite writer, redaction, reader
+internal/logview/     HTTP for the log viewer behind `log-view`
 web/src/              Gren: Doc (decoder), Protocol (wire), Marks (anchoring),
-                      Picker (the document list), Main (app)
-web/static/           index.html, ports.js, style.css, favicon.ico if you add one
-web/tests/            Gren tests for Marks and Picker, run under gren-unit-node
+                      Picker (the document list), Main (app); LogView (the
+                      wire log viewer) and JsonTree (its foldable JSON)
+web/static/           index.html, ports.js, style.css, favicon.ico if you add
+                      one; log.html and log.css for the viewer
+web/tests/            Gren tests for Marks, Picker and JsonTree, run under
+                      gren-unit-node
 tools/                development scripts; not built, not shipped
 ```
 
@@ -214,6 +219,16 @@ read and edit anything in the repository, not only the documents under review �
 the same reach it has when you run `claude` there yourself. What the *browser*
 can open is unchanged: still `--root` and below, still refusing paths that escape
 it.
+
+The wire log (`serve --claude-log`) holds every prompt and every file the model
+read, which is more than the review exposes, so it is treated as more
+sensitive: the file is created `0600`, and `log-view` has no password and
+refuses any address but loopback. Read it from elsewhere through an SSH tunnel.
+Before a frame is written, anything shaped like an API key (`sk-ant-…`,
+`sk-…`, `sk-proj-…`, `Bearer …`) is replaced, along with the string value of
+any JSON member named like a credential (`api_key`, `token`, `password`,
+`authorization`, …). The protocol itself carries no credential; this is for
+the `.env` file a `Read` happens to return.
 
 Files served over `/file/` go out with `nosniff` and a sandbox policy, so a
 directory of arbitrary files cannot become a way to run script in the review's
@@ -477,6 +492,7 @@ workspace's, and both roots read the same threads.
                                aside whole rather than overwritten
   snapshots/                   only outside a repository, where gitstore keeps
                                a copy of each file before a turn changes it
+  claude.db                    only with serve --claude-log: the wire log
 ```
 
 One file for a workspace means a review rooted at a subdirectory opens one that
@@ -491,6 +507,51 @@ re-render.
 Nothing here is the password. That is a digest in
 `~/.config/ai-reviewer/config.json` (or `$XDG_CONFIG_HOME`), and it belongs to
 you rather than to any one review.
+
+### The wire log
+
+`serve --claude-log` records every byte that crosses a claude process's pipes in
+SQLite, at `.ai-reviewer/claude.db` (`--claude-log-file FILE` puts it elsewhere).
+`ai-reviewer log-view FILE` serves a two-pane page for reading it, packet-viewer
+style, and can run while the serve writing it is still going: it polls for
+frames after the last one it has.
+
+There are no request/response pairs on that pipe to log. One user frame on
+stdin is answered by any number of frames on stdout, ending with `result`, so
+what gets recorded is a tree:
+
+```
+run       one serve
+process   one claude launch: argv, pid, why the daemon ended it, exit status
+turn      opened by the stdin frame; closed by result, whose cost it keeps
+frame     every frame either way, stderr chunks, and the daemon's own notes
+```
+
+and across it, `tool_call` links each `tool_use` to the frame carrying its
+`tool_result`. The frame is stored as the CLI wrote it; the columns beside it
+are taken out on the way in, so the list draws without parsing anything.
+
+A few decisions worth knowing before changing it:
+
+- **The tap sits in `claudeproc`, on the raw bytes.** `streamFrame` keeps only
+  what the daemon acts on, and the frames worth looking at in a log are the
+  ones nothing acts on yet — a type a CLI upgrade added, a usage figure. So the
+  stdout reader takes each frame as a `json.RawMessage` and hands it to the tap
+  before decoding the fields it needs.
+- **Writes block.** A slow disk slows the turn rather than dropping frames,
+  because a debugging log with holes in it misleads. Inserts into a WAL
+  database are microseconds, so this costs nothing in practice.
+- **Why a process ended is the daemon's to say.** The CLI only exits; whether
+  that was the idle reaper, an LRU eviction, an interrupt, a model change or a
+  turn's context expiring is passed down as the reason to `stop`, and the
+  first reason given is the one kept.
+- **What a turn was for comes from `review`**, on the context passed to `Ask`
+  (`claudeproc.WithTurnLabel`): the document, and the thread or critic section.
+  `claudeproc` knows neither.
+- **Cost is what the result frame reported, summed per turn**, which is how the
+  review counts spend too. Whether `total_cost_usd` is per turn or cumulative
+  over a long-lived process has not been checked against the real CLI yet; if
+  it turns out cumulative, both sums are wrong in the same way.
 
 ### Sessions and restarts
 

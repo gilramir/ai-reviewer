@@ -35,6 +35,8 @@ type Options struct {
 	// IdleTimeout and MaxLive bound how many Claude processes stay resident.
 	IdleTimeout time.Duration
 	MaxLive     int
+	// Tap, when non-nil, is shown every byte exchanged with every process.
+	Tap claudeproc.Tap
 }
 
 // Review is safe for concurrent use by every connected browser.
@@ -146,6 +148,8 @@ func New(opts Options) (*Review, error) {
 				Model:        opts.Model,
 				SystemPrompt: systemPrompt,
 				MaxBudgetUSD: opts.MaxBudgetUSD,
+				Role:         "reviewer",
+				Tap:          opts.Tap,
 			},
 			claudeproc.ManagerOptions{
 				MaxLive:     opts.MaxLive,
@@ -174,6 +178,8 @@ func New(opts Options) (*Review, error) {
 			// a review of it.
 			AllowedTools: []string{"Read", "Grep", "Glob"},
 			MaxBudgetUSD: opts.MaxBudgetUSD,
+			Role:         "critic",
+			Tap:          opts.Tap,
 		},
 		claudeproc.ManagerOptions{
 			MaxLive:     opts.MaxLive,
@@ -608,6 +614,7 @@ func (r *Review) runTurn(threadID, docPath, prompt, subject string) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
+	ctx = claudeproc.WithTurnLabel(ctx, claudeproc.TurnLabel{Doc: docPath, Purpose: "thread " + threadID})
 
 	result, err := session.Ask(ctx, prompt, func(ev claudeproc.Event) {
 		if ev.Kind == claudeproc.EventText && ev.Text != "" {
