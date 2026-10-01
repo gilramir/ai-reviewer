@@ -6,6 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestChangesReachTheBrowser follows a change all the way out: a document is
@@ -31,16 +34,12 @@ func TestChangesReachTheBrowser(t *testing.T) {
 	// against, so it must arrive with nothing marked.
 	send(t, conn, map[string]any{"type": "openDoc", "path": "spec.md"})
 	first := waitFor(t, conn, "doc")
-	if changes, ok := first["changes"]; ok {
-		t.Fatalf("the first render reported changes: %v", changes)
-	}
+	require.NotContains(t, first, "changes", "the first render reported changes")
 
 	rewritten := strings.Replace(testDoc,
 		"The system SHALL retry indefinitely until the operation succeeds.",
 		"The system retries three times, with backoff, until the operation succeeds.", 1)
-	if err := os.WriteFile(filepath.Join(root, "spec.md"), []byte(rewritten), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(root, "spec.md"), []byte(rewritten), 0o644))
 
 	send(t, conn, map[string]any{"type": "openDoc", "path": "spec.md"})
 	second := waitFor(t, conn, "doc")
@@ -49,9 +48,7 @@ func TestChangesReachTheBrowser(t *testing.T) {
 	marked := highlight(t, text, second["changes"])
 
 	const want = "Retry policyThe system [retries three times, with backoff,] until the operation succeeds.Unrelated paragraph."
-	if marked != want {
-		t.Errorf("\n got %q\nwant %q", marked, want)
-	}
+	assert.Equal(t, want, marked)
 }
 
 // clientText rebuilds a document's text the way Doc.text in the browser does:
@@ -63,9 +60,7 @@ func clientText(t *testing.T, doc any) []rune {
 	t.Helper()
 
 	frame, ok := doc.(map[string]any)
-	if !ok {
-		t.Fatalf("doc frame has no document: %T", doc)
-	}
+	require.True(t, ok, "doc frame has no document: %T", doc)
 	var out []rune
 	var walk func(node any)
 	walk = func(node any) {
@@ -95,21 +90,16 @@ func highlight(t *testing.T, text []rune, changes any) string {
 	t.Helper()
 
 	spans, ok := changes.([]any)
-	if !ok {
-		t.Fatalf("no changes in the frame: %T", changes)
-	}
+	require.True(t, ok, "no changes in the frame: %T", changes)
 
 	var out []rune
 	at := 0
 	for _, span := range spans {
 		s, ok := span.(map[string]any)
-		if !ok {
-			t.Fatalf("a change is not an object: %T", span)
-		}
+		require.True(t, ok, "a change is not an object: %T", span)
 		start, end := int(s["start"].(float64)), int(s["end"].(float64))
-		if start < at || end > len(text) || end < start {
-			t.Fatalf("change %d..%d is not inside 0..%d, or is out of order", start, end, len(text))
-		}
+		require.False(t, start < at || end > len(text) || end < start,
+			"change %d..%d is not inside 0..%d, or is out of order", start, end, len(text))
 		out = append(out, text[at:start]...)
 		out = append(out, '[')
 		out = append(out, text[start:end]...)

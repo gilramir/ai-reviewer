@@ -5,6 +5,9 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/gilramir/ai-reviewer/internal/mdast"
 )
 
@@ -44,22 +47,15 @@ func changesAfter(t *testing.T, before, after string) []Range {
 
 	root := t.TempDir()
 	path := filepath.Join(root, "spec.md")
-	if err := os.WriteFile(path, []byte(before), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(path, []byte(before), 0o644))
 
 	rev := newReview(t, root)
-	if _, _, err := rev.render("spec.md"); err != nil {
-		t.Fatalf("first render: %v", err)
-	}
+	_, _, err := rev.render("spec.md")
+	require.NoError(t, err, "first render")
 
-	if err := os.WriteFile(path, []byte(after), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(path, []byte(after), 0o644))
 	_, changes, err := rev.render("spec.md")
-	if err != nil {
-		t.Fatalf("second render: %v", err)
-	}
+	require.NoError(t, err, "second render")
 	return changes
 }
 
@@ -118,9 +114,7 @@ func TestChangesSinceTheSessionStarted(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			changes := changesAfter(t, c.before, c.after)
-			if got := highlighted(t, c.after, changes); got != c.want {
-				t.Errorf("\n got %q\nwant %q", got, c.want)
-			}
+			assert.Equal(t, c.want, highlighted(t, c.after, changes))
 		})
 	}
 }
@@ -129,18 +123,12 @@ func TestChangesSinceTheSessionStarted(t *testing.T) {
 // that has to hold for a file created in the middle of a session too.
 func TestTheFirstRenderHasNoChanges(t *testing.T) {
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "spec.md"), []byte("Some words.\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(root, "spec.md"), []byte("Some words.\n"), 0o644))
 
 	rev := newReview(t, root)
 	_, changes, err := rev.render("spec.md")
-	if err != nil {
-		t.Fatalf("render: %v", err)
-	}
-	if len(changes) != 0 {
-		t.Errorf("changes on a first render = %v, want none", changes)
-	}
+	require.NoError(t, err, "render")
+	assert.Empty(t, changes, "changes on a first render")
 }
 
 // Every edit is measured against the session, not against the render before it:
@@ -150,30 +138,22 @@ func TestChangesAccumulateAcrossTurns(t *testing.T) {
 	path := filepath.Join(root, "spec.md")
 	write := func(content string) {
 		t.Helper()
-		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
 	}
 
 	write("One two three four.\n")
 	rev := newReview(t, root)
-	if _, _, err := rev.render("spec.md"); err != nil {
-		t.Fatal(err)
-	}
+	_, _, err := rev.render("spec.md")
+	require.NoError(t, err)
 
 	write("One TWO three four.\n")
-	if _, _, err := rev.render("spec.md"); err != nil {
-		t.Fatal(err)
-	}
+	_, _, err = rev.render("spec.md")
+	require.NoError(t, err)
 
 	const final = "One TWO three FOUR.\n"
 	write(final)
 	_, changes, err := rev.render("spec.md")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
-	if got, want := highlighted(t, final, changes), "One [TWO] three [FOUR.]"; got != want {
-		t.Errorf("\n got %q\nwant %q", got, want)
-	}
+	assert.Equal(t, "One [TWO] three [FOUR.]", highlighted(t, final, changes))
 }

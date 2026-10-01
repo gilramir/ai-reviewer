@@ -5,6 +5,9 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // marked renders a result the way a reader would see it, so a failing case
@@ -81,18 +84,13 @@ func TestChanged(t *testing.T) {
 				before = words(c.before)
 			}
 			after := words(c.after)
-			got := marked(after, Changed(before, after))
-			if got != c.want {
-				t.Errorf("Changed(%q, %q)\n got %s\nwant %s", c.before, c.after, got, c.want)
-			}
+			assert.Equal(t, c.want, marked(after, Changed(before, after)), "Changed(%q, %q)", c.before, c.after)
 		})
 	}
 }
 
 func TestChangedOnEmptyAfter(t *testing.T) {
-	if got := Changed(words("everything went away"), nil); len(got) != 0 {
-		t.Errorf("an empty result was expected, got %v", got)
-	}
+	assert.Empty(t, Changed(words("everything went away"), nil))
 }
 
 // The one invariant that matters: whatever is left unmarked must really be
@@ -106,9 +104,7 @@ func TestUnmarkedWordsAreASubsequenceOfTheOldOnes(t *testing.T) {
 		after := mutate(random, before)
 
 		changed := Changed(before, after)
-		if len(changed) != len(after) {
-			t.Fatalf("round %d: got %d flags for %d words", round, len(changed), len(after))
-		}
+		require.Len(t, changed, len(after), "round %d: one flag per word", round)
 
 		at := 0
 		for i, word := range after {
@@ -123,10 +119,8 @@ func TestUnmarkedWordsAreASubsequenceOfTheOldOnes(t *testing.T) {
 					break
 				}
 			}
-			if !found {
-				t.Fatalf("round %d: %q was left unmarked but is not in %v in order\nbefore %v\nafter  %v",
-					round, word, before, before, after)
-			}
+			require.True(t, found, "round %d: %q was left unmarked but is not in %v in order\nbefore %v\nafter  %v",
+				round, word, before, before, after)
 		}
 	}
 }
@@ -176,9 +170,7 @@ func TestAWholesaleRewriteIsAllNew(t *testing.T) {
 
 	changed := Changed(before, after)
 	for i, c := range changed {
-		if !c {
-			t.Fatalf("word %d was left unmarked in a document with nothing in common", i)
-		}
+		require.True(t, c, "word %d was left unmarked in a document with nothing in common", i)
 	}
 }
 
@@ -199,8 +191,6 @@ func TestDistantEditsDoNotMarkWhatIsBetweenThem(t *testing.T) {
 	changed := Changed(before, after)
 	for i, c := range changed {
 		want := i == 10 || i == len(after)-10
-		if c != want {
-			t.Fatalf("word %d (%q): marked %v, want %v", i, after[i], c, want)
-		}
+		require.Equal(t, want, c, "word %d (%q): marked", i, after[i])
 	}
 }

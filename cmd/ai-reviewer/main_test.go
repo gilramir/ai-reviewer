@@ -1,8 +1,10 @@
 package main
 
 import (
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/gilramir/ai-reviewer/internal/review"
 	"github.com/gilramir/ai-reviewer/internal/server"
@@ -34,17 +36,11 @@ func TestListenAddress(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := listenAddress(tt.listen, tt.listenAll)
 			if tt.wantErr {
-				if err == nil {
-					t.Fatalf("listenAddress(%q, %q) = %q, want an error", tt.listen, tt.listenAll, got)
-				}
+				require.Error(t, err, "listenAddress(%q, %q) = %q", tt.listen, tt.listenAll, got)
 				return
 			}
-			if err != nil {
-				t.Fatalf("listenAddress(%q, %q): %v", tt.listen, tt.listenAll, err)
-			}
-			if got != tt.want {
-				t.Errorf("listenAddress(%q, %q) = %q, want %q", tt.listen, tt.listenAll, got, tt.want)
-			}
+			require.NoError(t, err, "listenAddress(%q, %q)", tt.listen, tt.listenAll)
+			assert.Equal(t, tt.want, got, "listenAddress(%q, %q)", tt.listen, tt.listenAll)
 		})
 	}
 }
@@ -53,12 +49,8 @@ func TestListenAddress(t *testing.T) {
 // reads as "reachable from the network".
 func TestListenAllIsNotLoopback(t *testing.T) {
 	addr, err := listenAddress(defaultListen, "8080")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if server.IsLoopback(addr) {
-		t.Errorf("%q reads as loopback, so --no-auth would be allowed with it", addr)
-	}
+	require.NoError(t, err)
+	assert.False(t, server.IsLoopback(addr), "%q reads as loopback, so --no-auth would be allowed with it", addr)
 }
 
 // The advice at shutdown is the only place many reviewers will be told how to
@@ -115,14 +107,10 @@ func TestLanding(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			got := landing(tt.settings)
 			for _, want := range tt.want {
-				if !strings.Contains(got, want) {
-					t.Errorf("the advice does not mention %q:\n%s", want, got)
-				}
+				assert.Contains(t, got, want, "the advice does not mention it")
 			}
 			for _, unwanted := range tt.notWant {
-				if strings.Contains(got, unwanted) {
-					t.Errorf("the advice mentions %q, and should not:\n%s", unwanted, got)
-				}
+				assert.NotContains(t, got, unwanted, "the advice mentions it, and should not")
 			}
 		})
 	}

@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/gilramir/ai-reviewer/internal/review"
 )
@@ -44,22 +46,17 @@ func newReviewWith(t *testing.T, adjust func(*review.Options)) (*review.Review, 
 	} {
 		cmd := exec.Command("git", args...)
 		cmd.Dir = root
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v: %s", args, err, out)
-		}
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, "git %v: %s", args, out)
 	}
 
 	docPath := filepath.Join(root, "spec.md")
-	if err := os.WriteFile(docPath, []byte(testDoc), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(docPath, []byte(testDoc), 0o644))
 	gitRun(t, root, "add", ".")
 	gitRun(t, root, "commit", "-qm", "initial")
 
 	stub, err := filepath.Abs("testdata/fake-claude")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	opts := review.Options{
 		Root:         root,
@@ -70,9 +67,7 @@ func newReviewWith(t *testing.T, adjust func(*review.Options)) (*review.Review, 
 		adjust(&opts)
 	}
 	rev, err := review.New(opts)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	t.Cleanup(func() { _ = rev.Close() })
 
 	return rev, root
@@ -83,9 +78,7 @@ func gitRun(t *testing.T, dir string, args ...string) string {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %v: %v: %s", args, err, out)
-	}
+	require.NoError(t, err, "git %v: %s", args, out)
 	return strings.TrimSpace(string(out))
 }
 
@@ -95,9 +88,7 @@ func login(t *testing.T, ts *httptest.Server, secret string) *http.Client {
 	t.Helper()
 
 	jar, err := newJar(ts.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	client := &http.Client{
 		Jar: jar,
 		CheckRedirect: func(*http.Request, []*http.Request) error {
@@ -106,14 +97,10 @@ func login(t *testing.T, ts *httptest.Server, secret string) *http.Client {
 	}
 
 	resp, err := client.PostForm(ts.URL+"/login", url.Values{"password": {secret}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusSeeOther {
-		t.Fatalf("login returned %d, want a redirect", resp.StatusCode)
-	}
+	require.Equal(t, http.StatusSeeOther, resp.StatusCode, "login should redirect")
 	return client
 }
 
@@ -153,7 +140,7 @@ func dialWS(t *testing.T, ts *httptest.Server, client *http.Client, origin strin
 		if resp != nil {
 			status = resp.StatusCode
 		}
-		t.Fatalf("websocket dial: %v (status %d)", err, status)
+		require.NoError(t, err, "websocket dial (status %d)", status)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
 	return conn
@@ -167,9 +154,7 @@ func waitFor(t *testing.T, conn *websocket.Conn, frameType string) map[string]an
 	for time.Now().Before(deadline) {
 		_ = conn.SetReadDeadline(time.Now().Add(20 * time.Second))
 		_, data, err := conn.ReadMessage()
-		if err != nil {
-			t.Fatalf("waiting for %q: %v", frameType, err)
-		}
+		require.NoError(t, err, "waiting for %q", frameType)
 		var frame map[string]any
 		if err := json.Unmarshal(data, &frame); err != nil {
 			continue
@@ -178,15 +163,13 @@ func waitFor(t *testing.T, conn *websocket.Conn, frameType string) map[string]an
 			return frame
 		}
 	}
-	t.Fatalf("timed out waiting for a %q frame", frameType)
+	require.FailNow(t, "timed out waiting for a frame", "type %q", frameType)
 	return nil
 }
 
 func send(t *testing.T, conn *websocket.Conn, frame map[string]any) {
 	t.Helper()
-	if err := conn.WriteJSON(frame); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, conn.WriteJSON(frame))
 }
 
 // TestReviewRoundTrip exercises the whole path: log in, open a document, file a
@@ -203,20 +186,13 @@ func TestReviewRoundTrip(t *testing.T) {
 
 	// The document list arrives unprompted so a reconnecting browser recovers.
 	list := waitFor(t, conn, "docList")
-	docs, _ := list["docs"].([]any)
-	if len(docs) != 1 || docs[0] != "spec.md" {
-		t.Fatalf("docList = %v, want [spec.md]", list["docs"])
-	}
+	require.Equal(t, []any{"spec.md"}, list["docs"])
 
 	send(t, conn, map[string]any{"type": "openDoc", "path": "spec.md"})
 	docFrame := waitFor(t, conn, "doc")
 	doc, _ := docFrame["doc"].(map[string]any)
-	if doc["path"] != "spec.md" {
-		t.Fatalf("doc frame is for %v", doc["path"])
-	}
-	if _, ok := doc["root"].(map[string]any); !ok {
-		t.Fatal("doc frame carries no tree")
-	}
+	require.Equal(t, "spec.md", doc["path"])
+	require.IsType(t, map[string]any{}, doc["root"], "doc frame carries no tree")
 
 	send(t, conn, map[string]any{
 		"type": "comment",
@@ -231,36 +207,20 @@ func TestReviewRoundTrip(t *testing.T) {
 	})
 
 	end := waitFor(t, conn, "turnEnd")
-	if edited, _ := end["edited"].(bool); !edited {
-		t.Fatalf("turn reported no edit: %v", end)
-	}
-	if commit, _ := end["commit"].(string); commit == "" {
-		t.Fatal("turn reported an edit but no commit")
-	}
+	require.Equal(t, true, end["edited"], "turn reported no edit: %v", end)
+	require.NotEmpty(t, end["commit"], "turn reported an edit but no commit")
 
 	// The edit must be on disk...
 	updated, err := os.ReadFile(filepath.Join(root, "spec.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(updated), "SHALL retry indefinitely") {
-		t.Errorf("document was not edited:\n%s", updated)
-	}
-	if !strings.Contains(string(updated), "REWORDED") {
-		t.Errorf("expected the stub's replacement in the file:\n%s", updated)
-	}
+	require.NoError(t, err)
+	assert.NotContains(t, string(updated), "SHALL retry indefinitely", "document was not edited")
+	assert.Contains(t, string(updated), "REWORDED", "expected the stub's replacement in the file")
 
 	// ...and recorded on the task branch, with the thread id in the trailer.
-	if branch := gitRun(t, root, "rev-parse", "--abbrev-ref", "HEAD"); branch != "review/test" {
-		t.Errorf("on branch %q, want review/test", branch)
-	}
+	assert.Equal(t, "review/test", gitRun(t, root, "rev-parse", "--abbrev-ref", "HEAD"))
 	message := gitRun(t, root, "log", "-1", "--format=%B")
-	if !strings.Contains(message, "review: reword this") {
-		t.Errorf("commit subject not derived from the comment:\n%s", message)
-	}
-	if !strings.Contains(message, "Review-Thread:") {
-		t.Errorf("commit is missing the thread trailer:\n%s", message)
-	}
+	assert.Contains(t, message, "review: reword this", "commit subject not derived from the comment")
+	assert.Contains(t, message, "Review-Thread:", "commit is missing the thread trailer")
 }
 
 // A question should be answered without touching the document, which is what
@@ -273,9 +233,7 @@ func TestQuestionDoesNotEdit(t *testing.T) {
 	defer ts.Close()
 
 	before, err := os.ReadFile(filepath.Join(root, "spec.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	conn := dialWS(t, ts, login(t, ts, secret), ts.URL)
 	waitFor(t, conn, "docList")
@@ -290,17 +248,12 @@ func TestQuestionDoesNotEdit(t *testing.T) {
 	})
 
 	end := waitFor(t, conn, "turnEnd")
-	if edited, _ := end["edited"].(bool); edited {
-		t.Error("a question should not have produced an edit")
-	}
+	edited, _ := end["edited"].(bool)
+	assert.False(t, edited, "a question should not have produced an edit")
 
 	after, err := os.ReadFile(filepath.Join(root, "spec.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(before) != string(after) {
-		t.Error("document changed in response to a question")
-	}
+	require.NoError(t, err)
+	assert.Equal(t, string(before), string(after), "document changed in response to a question")
 }
 
 func TestUnauthenticatedSocketIsRefused(t *testing.T) {
@@ -311,11 +264,10 @@ func TestUnauthenticatedSocketIsRefused(t *testing.T) {
 
 	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws"
 	header := http.Header{"Origin": {ts.URL}}
-	if _, resp, err := websocket.DefaultDialer.Dial(wsURL, header); err == nil {
-		t.Fatal("socket accepted a request with no session")
-	} else if resp == nil || resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("want 401, got %v (%v)", resp, err)
-	}
+	_, resp, err := websocket.DefaultDialer.Dial(wsURL, header)
+	require.Error(t, err, "socket accepted a request with no session")
+	require.NotNil(t, resp, "want 401, got no response (%v)", err)
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 }
 
 // Cross-site WebSocket hijacking is the one attack this daemon is genuinely
@@ -341,10 +293,12 @@ func TestForeignOriginIsRefused(t *testing.T) {
 			header.Add("Cookie", c.Name+"="+c.Value)
 		}
 
-		if _, resp, err := websocket.DefaultDialer.Dial(wsURL, header); err == nil {
-			t.Errorf("socket accepted origin %q", origin)
-		} else if resp == nil || resp.StatusCode != http.StatusForbidden {
-			t.Errorf("origin %q: want 403, got %v (%v)", origin, resp, err)
+		_, resp, err := websocket.DefaultDialer.Dial(wsURL, header)
+		if !assert.Error(t, err, "socket accepted origin %q", origin) {
+			continue
+		}
+		if assert.NotNil(t, resp, "origin %q: want 403, got no response (%v)", origin, err) {
+			assert.Equal(t, http.StatusForbidden, resp.StatusCode, "origin %q", origin)
 		}
 	}
 }
@@ -359,18 +313,12 @@ func TestBadPasswordIsRejected(t *testing.T) {
 		return http.ErrUseLastResponse
 	}}
 	resp, err := client.PostForm(ts.URL+"/login", url.Values{"password": {"wrong"}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("want the login page back, got %d", resp.StatusCode)
-	}
+	require.Equal(t, http.StatusOK, resp.StatusCode, "want the login page back")
 	for _, c := range resp.Cookies() {
-		if c.Name == sessionCookie && c.Value != "" {
-			t.Fatal("a failed login issued a session cookie")
-		}
+		require.False(t, c.Name == sessionCookie && c.Value != "", "a failed login issued a session cookie")
 	}
 }
 
@@ -386,9 +334,7 @@ func TestPathsOutsideRootAreRefused(t *testing.T) {
 
 	send(t, conn, map[string]any{"type": "openDoc", "path": "../../etc/passwd"})
 	frame := waitFor(t, conn, "error")
-	if msg, _ := frame["message"].(string); !strings.Contains(msg, "outside the review root") {
-		t.Errorf("error was %q", msg)
-	}
+	assert.Contains(t, frame["message"], "outside the review root")
 }
 
 // The browser cannot read a rejected WebSocket handshake's status, so it asks
@@ -407,13 +353,9 @@ func TestSessionProbeReportsAuthState(t *testing.T) {
 		return http.ErrUseLastResponse
 	}}
 	resp, err := bare.Get(ts.URL + "/session")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Errorf("unauthenticated /session = %d, want 401", resp.StatusCode)
-	}
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode, "unauthenticated /session")
 
 	// With one: 204.
 	client := login(t, ts, secret)
@@ -422,13 +364,9 @@ func TestSessionProbeReportsAuthState(t *testing.T) {
 		req.AddCookie(c)
 	}
 	resp2, err := client.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	resp2.Body.Close()
-	if resp2.StatusCode != http.StatusNoContent {
-		t.Errorf("authenticated /session = %d, want 204", resp2.StatusCode)
-	}
+	assert.Equal(t, http.StatusNoContent, resp2.StatusCode, "authenticated /session")
 }
 
 // A restart forgets every session, which is what made a still-open page retry
@@ -443,9 +381,7 @@ func TestSessionsDoNotSurviveANewAuth(t *testing.T) {
 
 	client := login(t, ts, secret)
 	cookies := client.Jar.Cookies(nil)
-	if len(cookies) == 0 {
-		t.Fatal("login issued no cookie")
-	}
+	require.NotEmpty(t, cookies, "login issued no cookie")
 
 	// A fresh Auth stands in for the daemon coming back up.
 	replacement := NewTokenAuth(secret)
@@ -453,9 +389,7 @@ func TestSessionsDoNotSurviveANewAuth(t *testing.T) {
 	for _, c := range cookies {
 		req.AddCookie(c)
 	}
-	if replacement.Authenticated(req) {
-		t.Error("a cookie from the previous process was accepted after restart")
-	}
+	assert.False(t, replacement.Authenticated(req), "a cookie from the previous process was accepted after restart")
 }
 
 // TestFiledCommentComesBackInThreads pins the acknowledgement the composer
@@ -493,7 +427,7 @@ func TestFiledCommentComesBackInThreads(t *testing.T) {
 			return
 		}
 	}
-	t.Errorf("no thread frame matched the comment that was sent: %v", frame["threads"])
+	assert.Fail(t, "no thread frame matched the comment that was sent", "%v", frame["threads"])
 }
 
 // threadCarries mirrors the match the client makes: same anchor quote, and a
@@ -544,9 +478,7 @@ func TestCommentOnAVanishedPassageIsRefused(t *testing.T) {
 	})
 
 	frame := waitFor(t, conn, "error")
-	if message, _ := frame["message"].(string); !strings.Contains(message, "selected passage") {
-		t.Errorf("error frame = %v, want it to name the missing passage", frame)
-	}
+	assert.Contains(t, frame["message"], "selected passage", "want the error to name the missing passage")
 }
 
 // A state file the daemon could not read is the one thing a reviewer must not
@@ -554,20 +486,12 @@ func TestCommentOnAVanishedPassageIsRefused(t *testing.T) {
 // Terminal output is easy to have scrolled past, so it goes to the browser too.
 func TestStateNoticeReachesTheBrowser(t *testing.T) {
 	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, ".ai-reviewer"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, ".ai-reviewer", "state.json"), []byte(`{"threads":[ truncated`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "spec.md"), []byte(testDoc), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.MkdirAll(filepath.Join(root, ".ai-reviewer"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, ".ai-reviewer", "state.json"), []byte(`{"threads":[ truncated`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "spec.md"), []byte(testDoc), 0o644))
 
 	rev, err := review.New(review.Options{Root: root})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	t.Cleanup(func() { _ = rev.Close() })
 
 	const secret = "test-secret-phrase"
@@ -578,9 +502,8 @@ func TestStateNoticeReachesTheBrowser(t *testing.T) {
 
 	frame := waitFor(t, conn, "error")
 	message, _ := frame["message"].(string)
-	if !strings.Contains(message, "state.json") || !strings.Contains(message, "kept as") {
-		t.Errorf("notice does not say what happened to the file: %q", message)
-	}
+	assert.Contains(t, message, "state.json", "notice does not say what happened to the file")
+	assert.Contains(t, message, "kept as", "notice does not say what happened to the file")
 }
 
 // newReviewInSubdir sets up the ordinary shape: a repository whose documents
@@ -596,35 +519,24 @@ func newReviewInSubdir(t *testing.T) (*review.Review, string) {
 	} {
 		cmd := exec.Command("git", args...)
 		cmd.Dir = repo
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v: %s", args, err, out)
-		}
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, "git %v: %s", args, out)
 	}
 
-	if err := os.MkdirAll(filepath.Join(repo, "doc"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(repo, "doc", "spec.md"), []byte(testDoc), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(repo, "CLAUDE.md"), []byte("# repository rules\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.MkdirAll(filepath.Join(repo, "doc"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "doc", "spec.md"), []byte(testDoc), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "CLAUDE.md"), []byte("# repository rules\n"), 0o644))
 	gitRun(t, repo, "add", ".")
 	gitRun(t, repo, "commit", "-qm", "initial")
 
 	stub, err := filepath.Abs("testdata/fake-claude")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	rev, err := review.New(review.Options{
 		Root:         filepath.Join(repo, "doc"),
 		Branch:       "review/test",
 		ClaudeBinary: stub,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	t.Cleanup(func() { _ = rev.Close() })
 
 	return rev, repo
@@ -641,12 +553,8 @@ func newReviewInSubdir(t *testing.T) (*review.Review, string) {
 func TestReviewOfASubdirectoryStillCommits(t *testing.T) {
 	rev, repo := newReviewInSubdir(t)
 
-	if rev.WorkRoot() != repo {
-		t.Errorf("Claude would run in %q, want the repository root %q", rev.WorkRoot(), repo)
-	}
-	if rev.Root() != filepath.Join(repo, "doc") {
-		t.Errorf("review root = %q", rev.Root())
-	}
+	assert.Equal(t, repo, rev.WorkRoot(), "Claude should run at the repository root")
+	assert.Equal(t, filepath.Join(repo, "doc"), rev.Root(), "review root")
 
 	const secret = "test-secret-phrase"
 	ts := httptest.NewServer(New(Options{Review: rev, Auth: NewTokenAuth(secret)}))
@@ -671,27 +579,16 @@ func TestReviewOfASubdirectoryStillCommits(t *testing.T) {
 	})
 
 	end := waitFor(t, conn, "turnEnd")
-	if commit, _ := end["commit"].(string); commit == "" {
-		t.Fatalf("the edit was not committed: %v", end)
-	}
+	require.NotEmpty(t, end["commit"], "the edit was not committed: %v", end)
 
 	updated, err := os.ReadFile(filepath.Join(repo, "doc", "spec.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(updated), "REWORDED") {
-		t.Errorf("document was not edited:\n%s", updated)
-	}
+	require.NoError(t, err)
+	assert.Contains(t, string(updated), "REWORDED", "document was not edited")
 
 	// The commit must name the file the way the repository does.
-	staged := gitRun(t, repo, "show", "--name-only", "--format=", "HEAD")
-	if staged != "doc/spec.md" {
-		t.Errorf("commit touched %q, want doc/spec.md", staged)
-	}
+	assert.Equal(t, "doc/spec.md", gitRun(t, repo, "show", "--name-only", "--format=", "HEAD"))
 	message := gitRun(t, repo, "log", "-1", "--format=%B")
-	if !strings.Contains(message, "Document: doc/spec.md") {
-		t.Errorf("commit body does not name the document as the repository sees it:\n%s", message)
-	}
+	assert.Contains(t, message, "Document: doc/spec.md", "commit body does not name the document as the repository sees it")
 }
 
 // The settings the reviewer can see arrive unprompted, so opening the page is
@@ -707,24 +604,16 @@ func TestSettingsArriveOnConnect(t *testing.T) {
 
 	frame := waitFor(t, conn, "settings")
 	settings, _ := frame["settings"].(map[string]any)
-	if settings == nil {
-		t.Fatalf("settings frame carries nothing: %v", frame)
-	}
+	require.NotNil(t, settings, "settings frame carries nothing: %v", frame)
 
-	if mode, _ := settings["permissionMode"].(string); mode != "acceptEdits" {
-		t.Errorf("permissionMode = %v", settings["permissionMode"])
-	}
+	assert.Equal(t, "acceptEdits", settings["permissionMode"])
 	tools, _ := settings["tools"].([]any)
-	if len(tools) == 0 || tools[0] != "Read" {
-		t.Errorf("tools = %v", settings["tools"])
+	if assert.NotEmpty(t, tools) {
+		assert.Equal(t, "Read", tools[0], "tools = %v", tools)
 	}
-	if ws, _ := settings["workspace"].(string); ws != rev.WorkRoot() {
-		t.Errorf("workspace = %v, want %q", settings["workspace"], rev.WorkRoot())
-	}
+	assert.Equal(t, rev.WorkRoot(), settings["workspace"])
 	choices, _ := settings["modelChoices"].([]any)
-	if len(choices) < 2 {
-		t.Errorf("modelChoices = %v", settings["modelChoices"])
-	}
+	assert.GreaterOrEqual(t, len(choices), 2, "modelChoices = %v", settings["modelChoices"])
 }
 
 // Choosing a model has to come back as a new settings frame: the panel shows
@@ -748,7 +637,7 @@ func TestChangingTheModelIsConfirmed(t *testing.T) {
 			return
 		}
 	}
-	t.Error("no settings frame reported the new model")
+	assert.Fail(t, "no settings frame reported the new model")
 }
 
 // A model nobody offers is refused rather than passed through to a launch that
@@ -766,12 +655,8 @@ func TestAnUnknownModelIsRefused(t *testing.T) {
 	send(t, conn, map[string]any{"type": "setModel", "model": "gpt-4"})
 
 	frame := waitFor(t, conn, "error")
-	if message, _ := frame["message"].(string); !strings.Contains(message, "gpt-4") {
-		t.Errorf("error = %v, want it to name the model", frame)
-	}
-	if got := rev.Settings().Model; got != "" {
-		t.Errorf("model changed to %q despite being refused", got)
-	}
+	assert.Contains(t, frame["message"], "gpt-4", "want the error to name the model")
+	assert.Empty(t, rev.Settings().Model, "model changed despite being refused")
 }
 
 // A reviewer who already has the words they want should not have to spend a
@@ -794,12 +679,8 @@ func TestHandEditWritesAndCommits(t *testing.T) {
 	send(t, conn, map[string]any{"type": "editSource", "doc": "spec.md", "anchor": anchor})
 	frame := waitFor(t, conn, "editSource")
 	source, _ := frame["text"].(string)
-	if source != quote {
-		t.Fatalf("source = %q, want the passage as the file holds it", source)
-	}
-	if frame["quote"] != quote {
-		t.Errorf("the source frame does not name the passage it answers: %v", frame)
-	}
+	require.Equal(t, quote, source, "want the passage as the file holds it")
+	assert.Equal(t, quote, frame["quote"], "the source frame does not name the passage it answers")
 
 	const replacement = "retry up to five times before"
 	send(t, conn, map[string]any{
@@ -811,27 +692,17 @@ func TestHandEditWritesAndCommits(t *testing.T) {
 	})
 
 	applied := waitFor(t, conn, "editApplied")
-	if commit, _ := applied["commit"].(string); commit == "" {
-		t.Errorf("editApplied carried no commit: %v", applied)
-	}
+	assert.NotEmpty(t, applied["commit"], "editApplied carried no commit: %v", applied)
 
 	after, err := os.ReadFile(filepath.Join(root, "spec.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(after), replacement) {
-		t.Errorf("the document does not carry the edit:\n%s", after)
-	}
+	require.NoError(t, err)
+	assert.Contains(t, string(after), replacement, "the document does not carry the edit")
 
 	// A hand edit is separable from a turn in the history: nobody's reasoning
 	// is attached to it, and the trailer says so.
 	message := gitRun(t, root, "log", "-1", "--format=%B")
-	if !strings.Contains(message, "Review-Edit: hand") {
-		t.Errorf("commit message does not mark the edit as the reviewer's:\n%s", message)
-	}
-	if !strings.Contains(message, "hand edit of") {
-		t.Errorf("commit subject does not name the passage:\n%s", message)
-	}
+	assert.Contains(t, message, "Review-Edit: hand", "commit message does not mark the edit as the reviewer's")
+	assert.Contains(t, message, "hand edit of", "commit subject does not name the passage")
 }
 
 // The compare-and-swap over the socket: an editor opened on text that has since
@@ -857,14 +728,10 @@ func TestHandEditOnStaleSourceIsRefused(t *testing.T) {
 	})
 
 	frame := waitFor(t, conn, "error")
-	if message, _ := frame["message"].(string); !strings.Contains(message, "changed while you were editing") {
-		t.Errorf("error frame = %v, want it to say the passage moved on", frame)
-	}
+	assert.Contains(t, frame["message"], "changed while you were editing", "want the error to say the passage moved on")
 
 	after, _ := os.ReadFile(filepath.Join(root, "spec.md"))
-	if string(after) != testDoc {
-		t.Errorf("the refused edit reached the file:\n%s", after)
-	}
+	assert.Equal(t, testDoc, string(after), "the refused edit reached the file")
 }
 
 // The whole reason the file route exists: a document embeds an image, and until
@@ -873,9 +740,7 @@ func TestEmbeddedImagesAreServed(t *testing.T) {
 	rev, root := newReview(t)
 
 	const png = "\x89PNG\r\n\x1a\nnot really"
-	if err := os.WriteFile(filepath.Join(root, "flow.png"), []byte(png), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(root, "flow.png"), []byte(png), 0o644))
 
 	const secret = "test-secret-phrase"
 	ts := httptest.NewServer(New(Options{Review: rev, Auth: NewTokenAuth(secret)}))
@@ -883,33 +748,21 @@ func TestEmbeddedImagesAreServed(t *testing.T) {
 
 	client := login(t, ts, secret)
 	resp, err := client.Get(ts.URL + "/file/flow.png")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET /file/flow.png = %d, want 200", resp.StatusCode)
-	}
+	require.Equal(t, http.StatusOK, resp.StatusCode, "GET /file/flow.png")
 	body, _ := io.ReadAll(resp.Body)
-	if string(body) != png {
-		t.Errorf("body = %q, want the file's bytes", body)
-	}
-	if got := resp.Header.Get("X-Content-Type-Options"); got != "nosniff" {
-		t.Errorf("X-Content-Type-Options = %q, want nosniff", got)
-	}
-	if got := resp.Header.Get("Content-Security-Policy"); got != "sandbox" {
-		t.Errorf("Content-Security-Policy = %q, want sandbox", got)
-	}
+	assert.Equal(t, png, string(body), "want the file's bytes")
+	assert.Equal(t, "nosniff", resp.Header.Get("X-Content-Type-Options"))
+	assert.Equal(t, "sandbox", resp.Header.Get("Content-Security-Policy"))
 }
 
 func TestTheFileRouteRefusesWhatIsNotUnderTheRoot(t *testing.T) {
 	rev, root := newReview(t)
 
 	outside := filepath.Join(filepath.Dir(root), "outside.png")
-	if err := os.WriteFile(outside, []byte("secret"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(outside, []byte("secret"), 0o644))
 	t.Cleanup(func() { _ = os.Remove(outside) })
 
 	const secret = "test-secret-phrase"
@@ -922,26 +775,18 @@ func TestTheFileRouteRefusesWhatIsNotUnderTheRoot(t *testing.T) {
 
 	for _, path := range []string{"/file/../outside.png", "/file/.git/config", "/file/"} {
 		resp, err := client.Get(ts.URL + path)
-		if err != nil {
-			t.Fatalf("GET %s: %v", path, err)
-		}
+		require.NoError(t, err, "GET %s", path)
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 
-		if resp.StatusCode != http.StatusNotFound {
-			t.Errorf("GET %s = %d, want 404", path, resp.StatusCode)
-		}
-		if strings.Contains(string(body), "secret") {
-			t.Errorf("GET %s returned the file outside the root", path)
-		}
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode, "GET %s", path)
+		assert.NotContains(t, string(body), "secret", "GET %s returned the file outside the root", path)
 	}
 }
 
 func TestTheFileRouteNeedsASession(t *testing.T) {
 	rev, root := newReview(t)
-	if err := os.WriteFile(filepath.Join(root, "flow.png"), []byte("png"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(root, "flow.png"), []byte("png"), 0o644))
 
 	ts := httptest.NewServer(New(Options{Review: rev, Auth: NewTokenAuth("test-secret-phrase")}))
 	defer ts.Close()
@@ -950,13 +795,9 @@ func TestTheFileRouteNeedsASession(t *testing.T) {
 		return http.ErrUseLastResponse
 	}}
 	resp, err := client.Get(ts.URL + "/file/flow.png")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusSeeOther {
-		t.Errorf("an unauthenticated fetch returned %d, want a redirect to the login page", resp.StatusCode)
-	}
+	assert.Equal(t, http.StatusSeeOther, resp.StatusCode, "an unauthenticated fetch should redirect to the login page")
 }
 
 // Clearing the context drops what the model is carrying without touching what
@@ -993,9 +834,7 @@ func TestClearContextKeepsThreadsAndStillAnswers(t *testing.T) {
 			break
 		}
 	}
-	if threadID == "" {
-		t.Fatal("no thread came back for the comment")
-	}
+	require.NotEmpty(t, threadID, "no thread came back for the comment")
 
 	send(t, conn, map[string]any{"type": "clearContext"})
 	waitFor(t, conn, "settings")
@@ -1005,23 +844,16 @@ func TestClearContextKeepsThreadsAndStillAnswers(t *testing.T) {
 	// so ask for the threads the way a browser does.
 	send(t, conn, map[string]any{"type": "openDoc", "path": "spec.md"})
 	frame := waitFor(t, conn, "threads")
-	if threads, _ := frame["threads"].([]any); len(threads) != 1 {
-		t.Errorf("threads after clearing context = %v, want the one that was filed", frame["threads"])
-	}
+	threads, _ := frame["threads"].([]any)
+	assert.Len(t, threads, 1, "threads after clearing context: want the one that was filed")
 
 	send(t, conn, map[string]any{"type": "reply", "threadId": threadID, "body": "reword this"})
 	end := waitFor(t, conn, "turnEnd")
-	if edited, _ := end["edited"].(bool); !edited {
-		t.Fatalf("a reply after clearing the context did not reach the document: %v", end)
-	}
+	require.Equal(t, true, end["edited"], "a reply after clearing the context did not reach the document: %v", end)
 
 	after, err := os.ReadFile(filepath.Join(root, "spec.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(after), "REWORDED") {
-		t.Errorf("the reply did not carry the passage it was about:\n%s", after)
-	}
+	require.NoError(t, err)
+	assert.Contains(t, string(after), "REWORDED", "the reply did not carry the passage it was about")
 }
 
 // The panel has to be able to say where the review's commits are and how to
@@ -1037,18 +869,10 @@ func TestSettingsReportTheBranchAndHowToMergeIt(t *testing.T) {
 	conn := dialWS(t, ts, login(t, ts, secret), ts.URL)
 
 	settings := settingsFrom(t, waitFor(t, conn, "settings"))
-	if settings["branch"] != "review/test" {
-		t.Errorf("branch = %v, want review/test", settings["branch"])
-	}
-	if settings["baseBranch"] != "main" {
-		t.Errorf("baseBranch = %v, want the branch the review was cut from", settings["baseBranch"])
-	}
-	if commits, _ := settings["commits"].(float64); commits != 0 {
-		t.Errorf("commits = %v, want none before anything is recorded", settings["commits"])
-	}
-	if merge := landingField(settings, "merge"); merge != "" {
-		t.Errorf("landing.merge = %q, want nothing to merge", merge)
-	}
+	assert.Equal(t, "review/test", settings["branch"])
+	assert.Equal(t, "main", settings["baseBranch"], "want the branch the review was cut from")
+	assert.EqualValues(t, 0, settings["commits"], "want none before anything is recorded")
+	assert.Empty(t, landingField(settings, "merge"), "want nothing to merge")
 
 	// One turn, one commit.
 	send(t, conn, map[string]any{
@@ -1060,23 +884,13 @@ func TestSettingsReportTheBranchAndHowToMergeIt(t *testing.T) {
 	waitFor(t, conn, "turnEnd")
 
 	settings = settingsFrom(t, waitFor(t, conn, "settings"))
-	if commits, _ := settings["commits"].(float64); commits != 1 {
-		t.Errorf("commits = %v, want the one the turn recorded", settings["commits"])
-	}
-	if merge := landingField(settings, "merge"); merge != "git switch main && git merge review/test" {
-		t.Errorf("landing.merge = %q", merge)
-	}
-	if squash := landingField(settings, "squash"); squash != "git switch main && git merge --squash review/test && git commit" {
-		t.Errorf("landing.squash = %q", squash)
-	}
-	if remove := landingField(settings, "delete"); remove != "git branch -d review/test" {
-		t.Errorf("landing.delete = %q", remove)
-	}
+	assert.EqualValues(t, 1, settings["commits"], "want the one the turn recorded")
+	assert.Equal(t, "git switch main && git merge review/test", landingField(settings, "merge"))
+	assert.Equal(t, "git switch main && git merge --squash review/test && git commit", landingField(settings, "squash"))
+	assert.Equal(t, "git branch -d review/test", landingField(settings, "delete"))
 	// The squash needs the capital -D: git cannot see one commit as the
 	// commits it was squashed from, so it refuses the lowercase one.
-	if remove := landingField(settings, "squashDelete"); remove != "git branch -D review/test" {
-		t.Errorf("landing.squashDelete = %q", remove)
-	}
+	assert.Equal(t, "git branch -D review/test", landingField(settings, "squashDelete"))
 
 	// What the reviewer does with that command, in their own terminal.
 	gitRun(t, root, "switch", "main")
@@ -1085,12 +899,8 @@ func TestSettingsReportTheBranchAndHowToMergeIt(t *testing.T) {
 
 	send(t, conn, map[string]any{"type": "setModel", "model": "sonnet"})
 	settings = settingsFrom(t, waitFor(t, conn, "settings"))
-	if commits, _ := settings["commits"].(float64); commits != 0 {
-		t.Errorf("commits = %v after the branch was merged, want none", settings["commits"])
-	}
-	if merge := landingField(settings, "merge"); merge != "" {
-		t.Errorf("landing.merge = %q after the branch was merged, want nothing to merge", merge)
-	}
+	assert.EqualValues(t, 0, settings["commits"], "after the branch was merged, want none")
+	assert.Empty(t, landingField(settings, "merge"), "after the branch was merged, want nothing to merge")
 }
 
 // landingField reads one of the commands the panel offers out of a settings
@@ -1105,34 +915,22 @@ func landingField(settings map[string]any, name string) string {
 // the branch it was cut from has to survive in the state file.
 func TestTheBaseBranchSurvivesARestart(t *testing.T) {
 	rev, root := newReview(t)
-	if base := rev.Settings().BaseBranch; base != "main" {
-		t.Fatalf("baseBranch = %q, want main", base)
-	}
-	if err := rev.Close(); err != nil {
-		t.Fatal(err)
-	}
+	require.Equal(t, "main", rev.Settings().BaseBranch)
+	require.NoError(t, rev.Close())
 
 	stub, err := filepath.Abs("testdata/fake-claude")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	restarted, err := review.New(review.Options{Root: root, Branch: "review/test", ClaudeBinary: stub})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	t.Cleanup(func() { _ = restarted.Close() })
 
-	if base := restarted.Settings().BaseBranch; base != "main" {
-		t.Errorf("baseBranch after a restart = %q, want main", base)
-	}
+	assert.Equal(t, "main", restarted.Settings().BaseBranch, "after a restart")
 }
 
 func settingsFrom(t *testing.T, frame map[string]any) map[string]any {
 	t.Helper()
 	settings, ok := frame["settings"].(map[string]any)
-	if !ok {
-		t.Fatalf("settings frame carries no settings: %v", frame)
-	}
+	require.True(t, ok, "settings frame carries no settings: %v", frame)
 	return settings
 }
 
@@ -1148,20 +946,16 @@ func TestFaviconIsServedWithoutASession(t *testing.T) {
 		return http.ErrUseLastResponse
 	}}
 	resp, err := client.Get(ts.URL + "/favicon.ico")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer resp.Body.Close()
 
 	// 404 when the build carries no icon, 200 when it does — never a redirect
 	// to the login page, which is what the browser would draw as the icon.
 	switch resp.StatusCode {
 	case http.StatusOK:
-		if got := resp.Header.Get("Content-Type"); got != "image/x-icon" {
-			t.Errorf("Content-Type = %q, want image/x-icon", got)
-		}
+		assert.Equal(t, "image/x-icon", resp.Header.Get("Content-Type"))
 	case http.StatusNotFound:
 	default:
-		t.Errorf("GET /favicon.ico = %d, want 200 or 404", resp.StatusCode)
+		assert.Fail(t, "GET /favicon.ico wants 200 or 404", "got %d", resp.StatusCode)
 	}
 }

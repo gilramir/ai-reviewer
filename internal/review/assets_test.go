@@ -9,6 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/gilramir/ai-reviewer/internal/mdast"
 )
 
@@ -27,9 +30,7 @@ func imageURLs(node mdast.Node) []string {
 func renderOne(t *testing.T, rev *Review, docPath string) []string {
 	t.Helper()
 	doc, err := rev.Render(docPath)
-	if err != nil {
-		t.Fatalf("Render: %v", err)
-	}
+	require.NoError(t, err, "Render")
 	return imageURLs(doc.Root)
 }
 
@@ -41,15 +42,9 @@ func TestImagesAreServedFromTheFileRoute(t *testing.T) {
 	rev := newReview(t, root)
 
 	urls := renderOne(t, rev, "spec.md")
-	if len(urls) != 1 {
-		t.Fatalf("urls = %v, want one image", urls)
-	}
-	if !strings.HasPrefix(urls[0], "/file/flow.png?") {
-		t.Errorf("url = %q, want it pointed at the file route", urls[0])
-	}
-	if !strings.Contains(urls[0], "v=") {
-		t.Errorf("url = %q, want a version stamp", urls[0])
-	}
+	require.Len(t, urls, 1, "want one image")
+	assert.True(t, strings.HasPrefix(urls[0], "/file/flow.png?"), "url = %q, want it pointed at the file route", urls[0])
+	assert.Contains(t, urls[0], "v=", "want a version stamp")
 }
 
 // The point of the stamp. A regenerated diagram has to arrive under a URL the
@@ -66,14 +61,10 @@ func TestARegeneratedImageGetsANewURL(t *testing.T) {
 	// What `dot -Tpng` does a moment later.
 	later := time.Now().Add(2 * time.Second)
 	write(t, image, "second, and larger")
-	if err := os.Chtimes(image, later, later); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.Chtimes(image, later, later))
 
 	after := renderOne(t, rev, "spec.md")
-	if before[0] == after[0] {
-		t.Errorf("the URL did not change when the image did: %q", after[0])
-	}
+	assert.NotEqual(t, before[0], after[0], "the URL did not change when the image did")
 }
 
 // A document rendered before its image exists must still get a usable URL, and
@@ -85,15 +76,11 @@ func TestAMissingImageIsStillRoutedAndPicksUpAStamp(t *testing.T) {
 	rev := newReview(t, root)
 
 	missing := renderOne(t, rev, "spec.md")
-	if missing[0] != "/file/flow.png" {
-		t.Errorf("url = %q, want the route with no stamp", missing[0])
-	}
+	assert.Equal(t, "/file/flow.png", missing[0], "want the route with no stamp")
 
 	write(t, filepath.Join(root, "flow.png"), "made by dot")
 	arrived := renderOne(t, rev, "spec.md")
-	if !strings.HasPrefix(arrived[0], "/file/flow.png?v=") {
-		t.Errorf("url = %q, want a stamp once the file exists", arrived[0])
-	}
+	assert.True(t, strings.HasPrefix(arrived[0], "/file/flow.png?v="), "url = %q, want a stamp once the file exists", arrived[0])
 }
 
 func TestOnlyRelativeImagesInsideTheRootAreRewritten(t *testing.T) {
@@ -108,9 +95,7 @@ func TestOnlyRelativeImagesInsideTheRootAreRewritten(t *testing.T) {
 	rev := newReview(t, root)
 
 	for _, url := range renderOne(t, rev, "spec.md") {
-		if strings.HasPrefix(url, AssetRoute) {
-			t.Errorf("url %q was rewritten and should have been left alone", url)
-		}
+		assert.False(t, strings.HasPrefix(url, AssetRoute), "url %q was rewritten and should have been left alone", url)
 	}
 }
 
@@ -118,18 +103,14 @@ func TestOnlyRelativeImagesInsideTheRootAreRewritten(t *testing.T) {
 // not the review root.
 func TestImagePathsResolveAgainstTheDocument(t *testing.T) {
 	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "design"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "design"), 0o755))
 	write(t, filepath.Join(root, "design", "spec.md"), "![](flow.png)\n")
 	write(t, filepath.Join(root, "design", "flow.png"), "png")
 
 	rev := newReview(t, root)
 
 	urls := renderOne(t, rev, "design/spec.md")
-	if !strings.HasPrefix(urls[0], "/file/design/flow.png?") {
-		t.Errorf("url = %q, want it resolved beside the document", urls[0])
-	}
+	assert.True(t, strings.HasPrefix(urls[0], "/file/design/flow.png?"), "url = %q, want it resolved beside the document", urls[0])
 }
 
 // The index the watcher uses: a rendered document knows what it points at, so a
@@ -141,22 +122,15 @@ func TestARenderedDocumentIsFoundByItsImage(t *testing.T) {
 
 	rev := newReview(t, root)
 
-	if docs := rev.docsUsing("flow.png"); len(docs) != 0 {
-		t.Errorf("docsUsing before any render = %v, want none", docs)
-	}
+	assert.Empty(t, rev.docsUsing("flow.png"), "docsUsing before any render")
 	renderOne(t, rev, "spec.md")
 
-	docs := rev.docsUsing("flow.png")
-	if len(docs) != 1 || docs[0] != "spec.md" {
-		t.Errorf("docsUsing = %v, want the document that embeds it", docs)
-	}
+	assert.Equal(t, []string{"spec.md"}, rev.docsUsing("flow.png"), "want the document that embeds it")
 
 	// The image is taken out of the document; it stops depending on it.
 	write(t, filepath.Join(root, "spec.md"), "no diagram any more\n")
 	renderOne(t, rev, "spec.md")
-	if docs := rev.docsUsing("flow.png"); len(docs) != 0 {
-		t.Errorf("docsUsing after the image was removed = %v, want none", docs)
-	}
+	assert.Empty(t, rev.docsUsing("flow.png"), "docsUsing after the image was removed")
 }
 
 func TestAssetPathRefusesWhatIsNotUnderTheRoot(t *testing.T) {
@@ -165,21 +139,17 @@ func TestAssetPathRefusesWhatIsNotUnderTheRoot(t *testing.T) {
 	write(t, filepath.Join(root, "flow.png"), "png")
 	rev := newReview(t, root)
 
-	if _, err := rev.AssetPath("flow.png"); err != nil {
-		t.Errorf("AssetPath refused a file in the root: %v", err)
-	}
+	_, err := rev.AssetPath("flow.png")
+	assert.NoError(t, err, "AssetPath refused a file in the root")
 	for _, bad := range []string{"../outside.png", "../../etc/passwd", ".git/config", "sub/../../out.png"} {
-		if _, err := rev.AssetPath(bad); err == nil {
-			t.Errorf("AssetPath allowed %q", bad)
-		}
+		_, err := rev.AssetPath(bad)
+		assert.Error(t, err, "AssetPath allowed %q", bad)
 	}
 }
 
 func write(t *testing.T, path, content string) {
 	t.Helper()
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
 }
 
 // The case this exists for: the model writes a Graphviz file and cannot run
@@ -195,9 +165,7 @@ func TestARegeneratedImageRepublishesTheDocument(t *testing.T) {
 
 	// Only a document that has been rendered is known to embed anything, which
 	// is what opening one in the browser does.
-	if err := rev.PublishDoc("spec.md"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, rev.PublishDoc("spec.md"))
 
 	ctx, stop := context.WithCancel(context.Background())
 	defer stop()
@@ -207,9 +175,7 @@ func TestARegeneratedImageRepublishesTheDocument(t *testing.T) {
 	write(t, filepath.Join(root, "flow.dot.png"), "what dot just produced")
 
 	url := firstImageURL(t, waitForDoc(t, frames, "spec.md"))
-	if !strings.HasPrefix(url, "/file/flow.dot.png?v=") {
-		t.Errorf("republished document points at %q, want the new image", url)
-	}
+	assert.True(t, strings.HasPrefix(url, "/file/flow.dot.png?v="), "republished document points at %q, want the new image", url)
 }
 
 // waitForWatcher blocks until the watcher is delivering events. Watch sets
@@ -228,13 +194,11 @@ func waitForWatcher(t *testing.T, frames <-chan []byte, root string) {
 		write(t, probe, "# probe\n")
 
 		if frame := readFrame(frames, time.Second); frame != nil && isDoc(frame, "probe.md") {
-			if err := os.Remove(probe); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, os.Remove(probe))
 			return
 		}
 	}
-	t.Fatal("the watcher never delivered an event")
+	require.FailNow(t, "the watcher never delivered an event")
 }
 
 // waitForDoc returns the next render of one document, ignoring everything else
@@ -248,7 +212,7 @@ func waitForDoc(t *testing.T, frames <-chan []byte, docPath string) map[string]a
 			return frame
 		}
 	}
-	t.Fatalf("no render of %s arrived", docPath)
+	require.FailNow(t, "no render arrived", "document %s", docPath)
 	return nil
 }
 
@@ -298,8 +262,6 @@ func firstImageURL(t *testing.T, frame map[string]any) string {
 	}
 
 	url := walk(root)
-	if url == "" {
-		t.Fatalf("no image in the published document: %v", frame)
-	}
+	require.NotEmpty(t, url, "no image in the published document: %v", frame)
 	return url
 }

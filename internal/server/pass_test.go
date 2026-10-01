@@ -8,6 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/gilramir/ai-reviewer/internal/review"
 )
 
@@ -48,46 +51,32 @@ func waitForReply(t *testing.T, rev *review.Review, docPath, threadID string) {
 func TestAReviewingPassFilesAnchoredThreads(t *testing.T) {
 	rev, root := newReview(t)
 
-	if err := rev.StartPass("spec.md", "check the claims"); err != nil {
-		t.Fatalf("StartPass: %v", err)
-	}
+	require.NoError(t, rev.StartPass("spec.md", "check the claims"))
 	waitForPass(t, rev, "spec.md")
 
 	threads := rev.ThreadsFor("spec.md")
-	if len(threads) != 1 {
-		t.Fatalf("got %d threads, want 1: %+v", len(threads), threads)
-	}
+	require.Len(t, threads, 1)
 
 	thread := threads[0]
-	if thread.Origin != review.OriginModel {
-		t.Errorf("origin = %q, want %q", thread.Origin, review.OriginModel)
-	}
-	if thread.Brief != "check the claims" {
-		t.Errorf("brief = %q, want the brief the pass was given", thread.Brief)
-	}
-	if thread.Status != review.StatusOpen || !thread.AwaitsReviewer() {
-		t.Errorf("a freshly raised comment should be open and waiting on a person: %+v", thread)
-	}
-	if len(thread.Messages) != 1 || thread.Messages[0].Role != review.RoleAssistant {
-		t.Fatalf("messages = %+v, want one from the model", thread.Messages)
-	}
+	assert.Equal(t, review.OriginModel, thread.Origin)
+	assert.Equal(t, "check the claims", thread.Brief, "want the brief the pass was given")
+	assert.True(t, thread.Status == review.StatusOpen && thread.AwaitsReviewer(),
+		"a freshly raised comment should be open and waiting on a person: %+v", thread)
+	require.Len(t, thread.Messages, 1)
+	require.Equal(t, review.RoleAssistant, thread.Messages[0].Role, "want one message, from the model")
 
 	// The gate, restated as the test that matters: the anchor must find its
 	// passage in the file exactly as every later re-anchoring will.
 	src, err := os.ReadFile(filepath.Join(root, "spec.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := review.Locate(string(src), thread.Anchor); !ok {
-		t.Fatalf("the filed anchor cannot be found in the document: %+v", thread.Anchor)
-	}
+	require.NoError(t, err)
+	_, ok := review.Locate(string(src), thread.Anchor)
+	require.True(t, ok, "the filed anchor cannot be found in the document: %+v", thread.Anchor)
 
 	// A bare quote is not an anchor. The daemon reads the context off wherever
 	// it found the passage, so the client can choose between repeats the same
 	// way the server does.
-	if thread.Anchor.Prefix == "" && thread.Anchor.Suffix == "" {
-		t.Errorf("anchor carries no context either side: %+v", thread.Anchor)
-	}
+	assert.False(t, thread.Anchor.Prefix == "" && thread.Anchor.Suffix == "",
+		"anchor carries no context either side: %+v", thread.Anchor)
 }
 
 // The reviewer's answer has to reach the process that can act on it, which is
@@ -95,35 +84,25 @@ func TestAReviewingPassFilesAnchoredThreads(t *testing.T) {
 func TestReplyingToAMachineThreadReachesTheEditor(t *testing.T) {
 	rev, root := newReview(t)
 
-	if err := rev.StartPass("spec.md", "check the claims"); err != nil {
-		t.Fatalf("StartPass: %v", err)
-	}
+	require.NoError(t, rev.StartPass("spec.md", "check the claims"))
 	waitForPass(t, rev, "spec.md")
 
 	threads := rev.ThreadsFor("spec.md")
-	if len(threads) != 1 {
-		t.Fatalf("got %d threads, want 1", len(threads))
-	}
+	require.Len(t, threads, 1)
 	quoted := threads[0].Anchor.Quote
 
-	if err := rev.Reply(threads[0].ID, "reword this"); err != nil {
-		t.Fatalf("Reply: %v", err)
-	}
+	require.NoError(t, rev.Reply(threads[0].ID, "reword this"))
 	waitForReply(t, rev, "spec.md", threads[0].ID)
 
 	// The editing conversation never saw the pass, so the reply had to state
 	// the passage from scratch. That it edited proves the passage arrived.
 	src, err := os.ReadFile(filepath.Join(root, "spec.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(src), quoted) {
-		t.Errorf("the passage was not edited; document still reads %q", src)
-	}
+	require.NoError(t, err)
+	assert.NotContains(t, string(src), quoted, "the passage was not edited")
 
 	after := rev.ThreadsFor("spec.md")
-	if len(after) != 1 || after[0].Commit == "" {
-		t.Errorf("the edit was not committed against the thread: %+v", after)
+	if assert.Len(t, after, 1) {
+		assert.NotEmpty(t, after[0].Commit, "the edit was not committed against the thread")
 	}
 }
 
@@ -132,18 +111,12 @@ func TestReplyingToAMachineThreadReachesTheEditor(t *testing.T) {
 func TestOnlyOnePassRunsPerDocument(t *testing.T) {
 	rev, _ := newReview(t)
 
-	if err := rev.StartPass("spec.md", "check the claims"); err != nil {
-		t.Fatalf("StartPass: %v", err)
-	}
+	require.NoError(t, rev.StartPass("spec.md", "check the claims"))
 	err := rev.StartPass("spec.md", "something else")
 	waitForPass(t, rev, "spec.md")
 
-	if err == nil {
-		t.Fatal("a second pass was allowed to start")
-	}
-	if !strings.Contains(err.Error(), "already running") {
-		t.Errorf("error = %v, want it to say a review is already running", err)
-	}
+	require.Error(t, err, "a second pass was allowed to start")
+	assert.ErrorContains(t, err, "already running")
 }
 
 // The reviewer is told where the pass has got to, and told when it is over.
@@ -153,9 +126,7 @@ func TestAPassReportsItsProgress(t *testing.T) {
 	frames, cancel := rev.Subscribe()
 	defer cancel()
 
-	if err := rev.StartPass("spec.md", "check the claims"); err != nil {
-		t.Fatalf("StartPass: %v", err)
-	}
+	require.NoError(t, rev.StartPass("spec.md", "check the claims"))
 	waitForPass(t, rev, "spec.md")
 
 	var active, finished bool
@@ -173,19 +144,16 @@ func TestAPassReportsItsProgress(t *testing.T) {
 			if err := json.Unmarshal(data, &frame); err != nil || frame.Type != "pass" {
 				continue
 			}
-			if frame.Doc != "spec.md" {
-				t.Errorf("pass frame names %q", frame.Doc)
-			}
+			assert.Equal(t, "spec.md", frame.Doc)
 			if frame.Active {
 				active = true
-				if frame.Section < 1 || frame.Section > frame.Total {
-					t.Errorf("section %d of %d makes no sense", frame.Section, frame.Total)
-				}
+				assert.True(t, frame.Section >= 1 && frame.Section <= frame.Total,
+					"section %d of %d makes no sense", frame.Section, frame.Total)
 			} else {
 				finished = true
 			}
 		case <-deadline:
-			t.Fatalf("pass frames: active=%v finished=%v", active, finished)
+			require.FailNow(t, "pass frames never arrived", "active=%v finished=%v", active, finished)
 		}
 	}
 }
@@ -195,24 +163,14 @@ func TestAPassReportsItsProgress(t *testing.T) {
 func TestTheStandingBriefIsReadFromDisk(t *testing.T) {
 	rev, root := newReview(t)
 
-	if brief := rev.Brief(); !strings.Contains(brief, "has not seen it before") {
-		t.Errorf("with no file on disk, got the wrong default: %q", brief)
-	}
+	assert.Contains(t, rev.Brief(), "has not seen it before", "with no file on disk, got the wrong default")
 
 	dir := filepath.Join(root, ".ai-reviewer")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "review.md"), []byte("Cut what repeats.\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "review.md"), []byte("Cut what repeats.\n"), 0o644))
 
-	if brief := rev.Brief(); brief != "Cut what repeats." {
-		t.Errorf("brief = %q, want what the file says", brief)
-	}
-	if got := rev.Settings().Brief; got != "Cut what repeats." {
-		t.Errorf("settings brief = %q", got)
-	}
+	assert.Equal(t, "Cut what repeats.", rev.Brief(), "want what the file says")
+	assert.Equal(t, "Cut what repeats.", rev.Settings().Brief)
 }
 
 // The claim the whole feature rests on: a pass cannot change the document.
@@ -220,14 +178,9 @@ func TestTheCriticHasNoEditingTools(t *testing.T) {
 	rev, _ := newReview(t)
 
 	tools := rev.Settings().CriticTools
-	if len(tools) == 0 {
-		t.Fatal("the critic reports no tools at all")
-	}
-	for _, tool := range tools {
-		if tool == "Edit" || tool == "Write" {
-			t.Errorf("the critic was given %s", tool)
-		}
-	}
+	require.NotEmpty(t, tools, "the critic reports no tools at all")
+	assert.NotContains(t, tools, "Edit")
+	assert.NotContains(t, tools, "Write")
 }
 
 // The document the repair round needs: two passages long enough to quote, so a
@@ -247,22 +200,16 @@ which this document does not otherwise describe.
 func TestAMisquoteIsRepairedRatherThanDropped(t *testing.T) {
 	rev, root := newReview(t)
 
-	if err := os.WriteFile(filepath.Join(root, "long.md"), []byte(twoPassageDoc), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(root, "long.md"), []byte(twoPassageDoc), 0o644))
 
-	if err := rev.StartPass("long.md", "check the claims"); err != nil {
-		t.Fatalf("StartPass: %v", err)
-	}
+	require.NoError(t, rev.StartPass("long.md", "check the claims"))
 	waitForPass(t, rev, "long.md")
 
 	threads := rev.ThreadsFor("long.md")
 
 	// One quoted correctly, one requoted after being shown where it diverged.
 	// The third quotes text that is in no document and stays dropped.
-	if len(threads) != 2 {
-		t.Fatalf("got %d threads, want 2 (one quoted, one repaired): %+v", len(threads), threads)
-	}
+	require.Len(t, threads, 2, "want one quoted, one repaired")
 
 	var repaired *review.Thread
 	for _, thread := range threads {
@@ -270,18 +217,13 @@ func TestAMisquoteIsRepairedRatherThanDropped(t *testing.T) {
 			repaired = thread
 		}
 	}
-	if repaired == nil {
-		t.Fatalf("the misquoted comment was dropped rather than repaired: %+v", threads)
-	}
+	require.NotNil(t, repaired, "the misquoted comment was dropped rather than repaired: %+v", threads)
 
 	// And it is a real anchor, not a plausible-looking one.
 	src, err := os.ReadFile(filepath.Join(root, "long.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := review.Locate(string(src), repaired.Anchor); !ok {
-		t.Errorf("the repaired anchor cannot be found in the document: %+v", repaired.Anchor)
-	}
+	require.NoError(t, err)
+	_, ok := review.Locate(string(src), repaired.Anchor)
+	assert.True(t, ok, "the repaired anchor cannot be found in the document: %+v", repaired.Anchor)
 }
 
 // What the repair round cannot save still has to be admitted to. Silence is
@@ -289,16 +231,12 @@ func TestAMisquoteIsRepairedRatherThanDropped(t *testing.T) {
 func TestWhatCannotBeRepairedIsReported(t *testing.T) {
 	rev, root := newReview(t)
 
-	if err := os.WriteFile(filepath.Join(root, "long.md"), []byte(twoPassageDoc), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(root, "long.md"), []byte(twoPassageDoc), 0o644))
 
 	frames, cancel := rev.Subscribe()
 	defer cancel()
 
-	if err := rev.StartPass("long.md", "check the claims"); err != nil {
-		t.Fatalf("StartPass: %v", err)
-	}
+	require.NoError(t, rev.StartPass("long.md", "check the claims"))
 	waitForPass(t, rev, "long.md")
 
 	deadline := time.After(5 * time.Second)
@@ -316,15 +254,11 @@ func TestWhatCannotBeRepairedIsReported(t *testing.T) {
 				continue
 			}
 			// One notice for the pass, naming the document and the count.
-			if !strings.Contains(frame.Message, "long.md") {
-				t.Errorf("the notice does not name the document: %q", frame.Message)
-			}
-			if !strings.HasPrefix(frame.Message, "1 comment") {
-				t.Errorf("want exactly one comment lost, got %q", frame.Message)
-			}
+			assert.Contains(t, frame.Message, "long.md", "the notice does not name the document")
+			assert.True(t, strings.HasPrefix(frame.Message, "1 comment"), "want exactly one comment lost, got %q", frame.Message)
 			return
 		case <-deadline:
-			t.Fatal("nothing was reported about the comment that could not be placed")
+			require.FailNow(t, "nothing was reported about the comment that could not be placed")
 		}
 	}
 }

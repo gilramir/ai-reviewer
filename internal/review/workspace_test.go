@@ -2,10 +2,14 @@ package review
 
 import (
 	"encoding/json"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // A review rooted at a subdirectory is the only case where the review root and
@@ -15,16 +19,11 @@ func newSubdirReview(t *testing.T) (repo string, docs string) {
 	t.Helper()
 
 	repo = t.TempDir()
-	if out, err := exec.Command("git", "-C", repo, "init", "-q", "-b", "main").CombinedOutput(); err != nil {
-		t.Fatalf("git init: %v: %s", err, out)
-	}
+	out, err := exec.Command("git", "-C", repo, "init", "-q", "-b", "main").CombinedOutput()
+	require.NoError(t, err, "git init: %s", out)
 	docs = filepath.Join(repo, "docs")
-	if err := os.MkdirAll(docs, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(docs, "spec.md"), []byte("# Spec\n\nA passage.\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.MkdirAll(docs, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(docs, "spec.md"), []byte("# Spec\n\nA passage.\n"), 0o644))
 	return repo, docs
 }
 
@@ -33,29 +32,19 @@ func writeWorkspaceState(t *testing.T, repo string, state persisted) {
 	t.Helper()
 
 	data, err := json.Marshal(state)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	dir := filepath.Join(repo, ".ai-reviewer")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "state.json"), data, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "state.json"), data, 0o644))
 }
 
 func readWorkspaceState(t *testing.T, repo string) persisted {
 	t.Helper()
 
 	data, err := os.ReadFile(filepath.Join(repo, ".ai-reviewer", "state.json"))
-	if err != nil {
-		t.Fatalf("reading the state file: %v", err)
-	}
+	require.NoError(t, err, "reading the state file")
 	var state persisted
-	if err := json.Unmarshal(data, &state); err != nil {
-		t.Fatalf("parsing the state file: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(data, &state), "parsing the state file")
 	return state
 }
 
@@ -65,19 +54,12 @@ func TestStateIsWrittenBesideGit(t *testing.T) {
 	repo, docs := newSubdirReview(t)
 
 	rev, err := New(Options{Root: docs})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := rev.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
+	require.NoError(t, err)
+	require.NoError(t, rev.Close(), "Close")
 
-	if _, err := os.Stat(filepath.Join(repo, ".ai-reviewer", "state.json")); err != nil {
-		t.Errorf("no state file beside .git: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(docs, ".ai-reviewer")); !os.IsNotExist(err) {
-		t.Errorf("a state directory was left in the review root (%v)", err)
-	}
+	assert.FileExists(t, filepath.Join(repo, ".ai-reviewer", "state.json"), "no state file beside .git")
+	_, err = os.Stat(filepath.Join(docs, ".ai-reviewer"))
+	assert.ErrorIs(t, err, fs.ErrNotExist, "a state directory was left in the review root")
 }
 
 // The point of the move: --root selects a view, not an identity. A thread filed
@@ -96,25 +78,17 @@ func TestAThreadIsTheSameFromEitherRoot(t *testing.T) {
 
 	// Read by a review rooted at docs/, where the same document is spec.md.
 	rev, err := New(Options{Root: docs})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	t.Cleanup(func() { _ = rev.Close() })
 
 	threads := rev.ThreadsFor("spec.md")
-	if len(threads) != 1 {
-		t.Fatalf("threads on spec.md = %d, want 1", len(threads))
-	}
-	if threads[0].ID != "t1" {
-		t.Errorf("thread id = %q, want t1", threads[0].ID)
-	}
+	require.Len(t, threads, 1, "threads on spec.md")
+	assert.Equal(t, "t1", threads[0].ID)
 
 	rev.mu.Lock()
 	session := rev.sessions["spec.md"]
 	rev.mu.Unlock()
-	if session != "session-1" {
-		t.Errorf("session for spec.md = %q, want session-1", session)
-	}
+	assert.Equal(t, "session-1", session, "session for spec.md")
 }
 
 // Saving puts the paths back in the workspace's terms, so the next run from any
@@ -124,9 +98,7 @@ func TestSaveWritesWorkspacePaths(t *testing.T) {
 	repo := filepath.Dir(docs)
 
 	rev, err := New(Options{Root: docs})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	rev.mu.Lock()
 	rev.sessions["spec.md"] = "session-1"
 	rev.turns["spec.md"] = 3
@@ -134,19 +106,13 @@ func TestSaveWritesWorkspacePaths(t *testing.T) {
 	rev.order = append(rev.order, "t1")
 	rev.mu.Unlock()
 
-	if err := rev.Close(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, rev.Close())
 
 	state := readWorkspaceState(t, repo)
-	if _, ok := state.Sessions["docs/spec.md"]; !ok {
-		t.Errorf("sessions are not keyed by workspace path: %v", state.Sessions)
-	}
-	if _, ok := state.Turns["docs/spec.md"]; !ok {
-		t.Errorf("turns are not keyed by workspace path: %v", state.Turns)
-	}
-	if len(state.Threads) != 1 || state.Threads[0].Doc != "docs/spec.md" {
-		t.Errorf("thread was not written under its workspace path: %+v", state.Threads)
+	assert.Contains(t, state.Sessions, "docs/spec.md", "sessions are not keyed by workspace path")
+	assert.Contains(t, state.Turns, "docs/spec.md", "turns are not keyed by workspace path")
+	if assert.Len(t, state.Threads, 1, "thread was not written under its workspace path") {
+		assert.Equal(t, "docs/spec.md", state.Threads[0].Doc, "thread was not written under its workspace path")
 	}
 }
 
@@ -166,29 +132,17 @@ func TestThreadsOutsideTheRootSurviveASave(t *testing.T) {
 	})
 
 	rev, err := New(Options{Root: docs})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	// It is invisible from here, which is correct: the browser cannot open it.
-	if threads := rev.ThreadsFor("README.md"); len(threads) != 0 {
-		t.Errorf("a document outside the root is being served: %v", threads)
-	}
-	if err := rev.Close(); err != nil {
-		t.Fatal(err)
-	}
+	assert.Empty(t, rev.ThreadsFor("README.md"), "a document outside the root is being served")
+	require.NoError(t, rev.Close())
 
 	state := readWorkspaceState(t, repo)
-	if len(state.Threads) != 1 || state.Threads[0].ID != "outside" {
-		t.Fatalf("the outside thread did not survive the save: %+v", state.Threads)
-	}
-	if state.Threads[0].Doc != "README.md" {
-		t.Errorf("the outside thread's path was rewritten: %q", state.Threads[0].Doc)
-	}
-	if state.Sessions["README.md"] != "session-elsewhere" {
-		t.Errorf("the outside session did not survive: %v", state.Sessions)
-	}
-	if state.Turns["README.md"] != 4 || state.Spend["README.md"] != 0.5 {
-		t.Errorf("the outside turn count or spend did not survive: %v %v", state.Turns, state.Spend)
-	}
+	require.Len(t, state.Threads, 1, "the outside thread did not survive the save")
+	require.Equal(t, "outside", state.Threads[0].ID, "the outside thread did not survive the save")
+	assert.Equal(t, "README.md", state.Threads[0].Doc, "the outside thread's path was rewritten")
+	assert.Equal(t, "session-elsewhere", state.Sessions["README.md"], "the outside session did not survive")
+	assert.Equal(t, 4, state.Turns["README.md"], "the outside turn count did not survive")
+	assert.Equal(t, 0.5, state.Spend["README.md"], "the outside spend did not survive")
 }

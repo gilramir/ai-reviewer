@@ -1,9 +1,11 @@
 package review
 
 import (
-	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/gilramir/ai-reviewer/internal/mdast"
 )
@@ -52,13 +54,9 @@ func TestProposalsAreReadOutOfWhateverTheModelWrapsThemIn(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			got := parseProposals(test.reply)
-			if len(got) != len(test.want) {
-				t.Fatalf("got %d proposals, want %d: %+v", len(got), len(test.want), got)
-			}
+			require.Len(t, got, len(test.want), "%+v", got)
 			for i, quote := range test.want {
-				if got[i].Quote != quote {
-					t.Errorf("proposal %d quote = %q, want %q", i, got[i].Quote, quote)
-				}
+				assert.Equal(t, quote, got[i].Quote, "proposal %d quote", i)
 			}
 		})
 	}
@@ -72,35 +70,22 @@ func TestAnchorInReadsTheContextOffThePlaceItFound(t *testing.T) {
 	rendered := mdast.Flatten(src)
 
 	sections := rendered.Sections(0)
-	if len(sections) != 2 {
-		t.Fatalf("got %d sections, want 2", len(sections))
-	}
+	require.Len(t, sections, 2)
 
 	first, at, ok := AnchorIn(rendered, sections[0], "The daemon waits.")
-	if !ok {
-		t.Fatal("the passage was not found in the first section")
-	}
+	require.True(t, ok, "the passage was not found in the first section")
 	second, also, ok := AnchorIn(rendered, sections[1], "The daemon waits.")
-	if !ok {
-		t.Fatal("the passage was not found in the second section")
-	}
+	require.True(t, ok, "the passage was not found in the second section")
 
-	if at.Start == also.Start {
-		t.Fatal("both sections anchored to the same occurrence")
-	}
-	if first.Prefix == second.Prefix {
-		t.Errorf("the two occurrences got the same context: %q", first.Prefix)
-	}
-	if !strings.Contains(first.Prefix, "One") || !strings.Contains(second.Prefix, "Two") {
-		t.Errorf("context does not say which heading it sits under: %q / %q", first.Prefix, second.Prefix)
-	}
+	require.NotEqual(t, at.Start, also.Start, "both sections anchored to the same occurrence")
+	assert.NotEqual(t, first.Prefix, second.Prefix, "the two occurrences got the same context")
+	assert.Contains(t, first.Prefix, "One", "context does not say which heading it sits under")
+	assert.Contains(t, second.Prefix, "Two", "context does not say which heading it sits under")
 
 	// And the context is what makes the two tell apart afterwards.
-	if found, ok := LocateIn(rendered, second); !ok {
-		t.Fatal("the second anchor could not be re-located")
-	} else if found.Start <= at.Start {
-		t.Errorf("the second anchor re-located onto the first occurrence")
-	}
+	found, ok := LocateIn(rendered, second)
+	require.True(t, ok, "the second anchor could not be re-located")
+	assert.Greater(t, found.Start, at.Start, "the second anchor re-located onto the first occurrence")
 }
 
 // A quote taken from Markdown source rather than the rendered text cannot be
@@ -110,12 +95,10 @@ func TestAQuoteCarryingMarkdownIsNotAnchored(t *testing.T) {
 	rendered := mdast.Flatten(src)
 	sections := rendered.Sections(0)
 
-	if _, _, ok := AnchorIn(rendered, sections[0], "**[a guide](x.md)** and on"); ok {
-		t.Error("a quote carrying syntax the reader never sees was accepted")
-	}
-	if _, _, ok := AnchorIn(rendered, sections[0], "a guide and on"); !ok {
-		t.Error("the same passage as the reader sees it was not found")
-	}
+	_, _, ok := AnchorIn(rendered, sections[0], "**[a guide](x.md)** and on")
+	assert.False(t, ok, "a quote carrying syntax the reader never sees was accepted")
+	_, _, ok = AnchorIn(rendered, sections[0], "a guide and on")
+	assert.True(t, ok, "the same passage as the reader sees it was not found")
 }
 
 // The hint a misquote gets back is the whole value of the second look. "Not
@@ -131,15 +114,9 @@ func TestAMisquoteIsToldWhereItDiverged(t *testing.T) {
 	// One word wrong, which is the failure that actually happens.
 	reason := gate.missing("The reviewer has selected the passage, and the daemon")
 
-	if !strings.Contains(reason, "The reviewer") {
-		t.Errorf("the reason does not say how far the quote matched: %q", reason)
-	}
-	if !strings.Contains(reason, "selected the passage") {
-		t.Errorf("the reason does not show what the text actually says: %q", reason)
-	}
-	if strings.Contains(reason, "no part of that") {
-		t.Errorf("a quote that mostly matched was reported as wholly absent: %q", reason)
-	}
+	assert.Contains(t, reason, "The reviewer", "the reason does not say how far the quote matched")
+	assert.Contains(t, reason, "selected the passage", "the reason does not show what the text actually says")
+	assert.NotContains(t, reason, "no part of that", "a quote that mostly matched was reported as wholly absent")
 }
 
 // An invented passage gets told so plainly, rather than being handed a hint
@@ -150,9 +127,7 @@ func TestAnInventedPassageIsToldItIsAbsent(t *testing.T) {
 
 	gate := &sectionGate{rendered: rendered, section: section, current: rendered}
 
-	if reason := gate.missing("§§ nowhere at all §§"); !strings.Contains(reason, "no part of that") {
-		t.Errorf("reason = %q, want it to say the passage is simply absent", reason)
-	}
+	assert.Contains(t, gate.missing("§§ nowhere at all §§"), "no part of that", "want it to say the passage is simply absent")
 }
 
 // The prefix search stops at the first miss, which is only sound because a
@@ -162,19 +137,12 @@ func TestTheLongestMatchingPrefixIsFound(t *testing.T) {
 	section := rendered.Sections(0)[0]
 
 	prefix, at, ok := longestPrefixIn(rendered, section, "alpha beta GAMMA")
-	if !ok {
-		t.Fatal("nothing matched at all")
-	}
-	if prefix != "alpha beta " {
-		t.Errorf("prefix = %q, want %q", prefix, "alpha beta ")
-	}
-	if at.Start != 0 {
-		t.Errorf("prefix located at %d, want 0", at.Start)
-	}
+	require.True(t, ok, "nothing matched at all")
+	assert.Equal(t, "alpha beta ", prefix)
+	assert.Equal(t, 0, at.Start, "prefix location")
 
-	if _, _, ok := longestPrefixIn(rendered, section, "zeta"); ok {
-		t.Error("a quote with nothing in common reported a matching prefix")
-	}
+	_, _, ok = longestPrefixIn(rendered, section, "zeta")
+	assert.False(t, ok, "a quote with nothing in common reported a matching prefix")
 }
 
 // Quotes arrive from a model and can hold anything. Cutting one to find its
@@ -184,15 +152,9 @@ func TestPrefixSearchDoesNotSplitARune(t *testing.T) {
 	section := rendered.Sections(0)[0]
 
 	prefix, _, ok := longestPrefixIn(rendered, section, "the naïve approach — and then")
-	if !ok {
-		t.Fatal("nothing matched")
-	}
-	if !utf8.ValidString(prefix) {
-		t.Errorf("prefix %q is not valid UTF-8", prefix)
-	}
-	if !strings.Contains(prefix, "naïve") {
-		t.Errorf("prefix = %q, want it past the accented word", prefix)
-	}
+	require.True(t, ok, "nothing matched")
+	assert.True(t, utf8.ValidString(prefix), "prefix %q is not valid UTF-8", prefix)
+	assert.Contains(t, prefix, "naïve", "want it past the accented word")
 }
 
 // A rejection the model can do nothing about is not sent back to it: asking for
@@ -206,15 +168,11 @@ func TestAnOverlappingProposalIsSkippedRatherThanRefused(t *testing.T) {
 	gate := &sectionGate{rev: rev, rendered: rendered, section: section, current: rendered}
 
 	first := proposal{Quote: "The system retries indefinitely until it succeeds.", Comment: "One."}
-	if _, ok := gate.admit(first); !ok {
-		t.Fatal("the first proposal was refused")
-	}
+	_, ok := gate.admit(first)
+	require.True(t, ok, "the first proposal was refused")
 
 	inside := proposal{Quote: "retries indefinitely until it succeeds", Comment: "Two."}
-	if why, ok := gate.admit(inside); !ok {
-		t.Errorf("an overlapping proposal was sent back for repair: %q", why.reason)
-	}
-	if len(gate.kept) != 1 {
-		t.Errorf("kept %d proposals, want the overlapping one dropped quietly", len(gate.kept))
-	}
+	why, ok := gate.admit(inside)
+	assert.True(t, ok, "an overlapping proposal was sent back for repair: %q", why.reason)
+	assert.Len(t, gate.kept, 1, "want the overlapping one dropped quietly")
 }

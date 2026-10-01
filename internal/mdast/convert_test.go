@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 const sample = "# Retry policy\n" +
@@ -55,14 +58,10 @@ func TestSpansSliceBackToSource(t *testing.T) {
 		if n.Span == (Span{}) {
 			return
 		}
-		if n.Span.Start < 0 || n.Span.End > len(src) || n.Span.Start > n.Span.End {
-			t.Fatalf("%s %s: span %v out of bounds (len %d)", n.Kind, n.ID, n.Span, len(src))
-		}
+		require.True(t, n.Span.Start >= 0 && n.Span.End <= len(src) && n.Span.Start <= n.Span.End,
+			"%s %s: span %v out of bounds (len %d)", n.Kind, n.ID, n.Span, len(src))
 		if n.Kind == KindText {
-			got := string(src[n.Span.Start:n.Span.End])
-			if got != n.Text {
-				t.Errorf("%s: span yields %q, node text is %q", n.ID, got, n.Text)
-			}
+			assert.Equal(t, n.Text, string(src[n.Span.Start:n.Span.End]), "%s: what the span yields", n.ID)
 		}
 	})
 }
@@ -76,10 +75,9 @@ func TestSpansNestWithinParents(t *testing.T) {
 			if c.Span == (Span{}) || n.Span == (Span{}) {
 				continue
 			}
-			if c.Span.Start < n.Span.Start || c.Span.End > n.Span.End {
-				t.Errorf("%s %s span %v escapes parent %s %s span %v",
-					c.Kind, c.ID, c.Span, n.Kind, n.ID, n.Span)
-			}
+			assert.True(t, c.Span.Start >= n.Span.Start && c.Span.End <= n.Span.End,
+				"%s %s span %v escapes parent %s %s span %v",
+				c.Kind, c.ID, c.Span, n.Kind, n.ID, n.Span)
 			check(c)
 		}
 	}
@@ -89,29 +87,17 @@ func TestSpansNestWithinParents(t *testing.T) {
 func TestHeading(t *testing.T) {
 	doc := Render("sample.md", 1, []byte(sample))
 	hs := find(doc.Root, KindHeading)
-	if len(hs) != 1 {
-		t.Fatalf("want 1 heading, got %d", len(hs))
-	}
-	if hs[0].Level != 1 {
-		t.Errorf("want level 1, got %d", hs[0].Level)
-	}
-	if got := string([]byte(sample)[hs[0].Span.Start:hs[0].Span.End]); got != "Retry policy" {
-		t.Errorf("heading span yields %q", got)
-	}
+	require.Len(t, hs, 1)
+	assert.Equal(t, 1, hs[0].Level)
+	assert.Equal(t, "Retry policy", string([]byte(sample)[hs[0].Span.Start:hs[0].Span.End]), "what the heading span yields")
 }
 
 func TestCodeBlockKeepsLanguageAndText(t *testing.T) {
 	doc := Render("sample.md", 1, []byte(sample))
 	cbs := find(doc.Root, KindCodeBlock)
-	if len(cbs) != 1 {
-		t.Fatalf("want 1 code block, got %d", len(cbs))
-	}
-	if cbs[0].Lang != "go" {
-		t.Errorf("want lang go, got %q", cbs[0].Lang)
-	}
-	if cbs[0].Text != "func main() {}\n" {
-		t.Errorf("code text = %q", cbs[0].Text)
-	}
+	require.Len(t, cbs, 1)
+	assert.Equal(t, "go", cbs[0].Lang)
+	assert.Equal(t, "func main() {}\n", cbs[0].Text)
 }
 
 func TestTaskListHoistedOntoItem(t *testing.T) {
@@ -126,13 +112,13 @@ func TestTaskListHoistedOntoItem(t *testing.T) {
 			}
 		}
 	})
-	if checked != 1 || unchecked != 1 {
-		t.Errorf("want 1 checked and 1 unchecked task item, got %d/%d", checked, unchecked)
-	}
+	assert.Equal(t, 1, checked, "checked task items")
+	assert.Equal(t, 1, unchecked, "unchecked task items")
 	// The checkbox itself must not survive into the tree.
 	walk(doc.Root, func(n Node) {
-		if n.Kind == KindText && strings.HasPrefix(n.Text, "[") && len(n.Text) == 3 {
-			t.Errorf("checkbox leaked into tree as text node %q", n.Text)
+		if n.Kind == KindText {
+			assert.False(t, strings.HasPrefix(n.Text, "[") && len(n.Text) == 3,
+				"checkbox leaked into tree as text node %q", n.Text)
 		}
 	})
 }
@@ -140,46 +126,30 @@ func TestTaskListHoistedOntoItem(t *testing.T) {
 func TestTableAlignmentAndHeader(t *testing.T) {
 	doc := Render("sample.md", 1, []byte(sample))
 	rows := find(doc.Root, KindTableRow)
-	if len(rows) != 2 {
-		t.Fatalf("want 2 rows (header + body), got %d", len(rows))
-	}
-	if !rows[0].Header {
-		t.Error("first row should be the header")
-	}
+	require.Len(t, rows, 2, "header + body")
+	assert.True(t, rows[0].Header, "first row should be the header")
 	cells := find(doc.Root, KindTableCell)
-	if len(cells) != 4 {
-		t.Fatalf("want 4 cells, got %d", len(cells))
-	}
-	if cells[1].Align != "right" {
-		t.Errorf("second column should be right-aligned, got %q", cells[1].Align)
-	}
-	if !cells[0].Header || cells[2].Header {
-		t.Error("header flag should distinguish header cells from body cells")
-	}
+	require.Len(t, cells, 4)
+	assert.Equal(t, "right", cells[1].Align, "second column should be right-aligned")
+	assert.True(t, cells[0].Header, "header flag should distinguish header cells from body cells")
+	assert.False(t, cells[2].Header, "header flag should distinguish header cells from body cells")
 }
 
 func TestEmphasisAndStrong(t *testing.T) {
 	doc := Render("sample.md", 1, []byte(sample))
-	if n := len(find(doc.Root, KindEmphasis)); n != 1 {
-		t.Errorf("want 1 emphasis, got %d", n)
-	}
-	if n := len(find(doc.Root, KindStrong)); n != 1 {
-		t.Errorf("want 1 strong, got %d", n)
-	}
+	assert.Len(t, find(doc.Root, KindEmphasis), 1)
+	assert.Len(t, find(doc.Root, KindStrong), 1)
 	spans := find(doc.Root, KindCodeSpan)
-	if len(spans) != 1 || spans[0].Text != "item" {
-		t.Errorf("code span = %+v", spans)
+	if assert.Len(t, spans, 1) {
+		assert.Equal(t, "item", spans[0].Text)
 	}
 }
 
 func TestDocumentSpansWholeSource(t *testing.T) {
 	doc := Render("sample.md", 7, []byte(sample))
-	if doc.Root.Span.Start != 0 || doc.Root.Span.End != len(sample) {
-		t.Errorf("document span %v, want 0..%d", doc.Root.Span, len(sample))
-	}
-	if doc.Rev != 7 || doc.Path != "sample.md" {
-		t.Errorf("metadata not carried: %+v", doc)
-	}
+	assert.Equal(t, Span{Start: 0, End: len(sample)}, doc.Root.Span)
+	assert.Equal(t, 7, doc.Rev, "metadata not carried")
+	assert.Equal(t, "sample.md", doc.Path, "metadata not carried")
 }
 
 // TestIDsAreUnique matters because the client keys its virtual DOM on them.
@@ -187,9 +157,7 @@ func TestIDsAreUnique(t *testing.T) {
 	doc := Render("sample.md", 1, []byte(sample))
 	seen := map[string]bool{}
 	walk(doc.Root, func(n Node) {
-		if seen[n.ID] {
-			t.Errorf("duplicate node id %q", n.ID)
-		}
+		assert.False(t, seen[n.ID], "duplicate node id %q", n.ID)
 		seen[n.ID] = true
 	})
 }
@@ -197,24 +165,17 @@ func TestIDsAreUnique(t *testing.T) {
 func TestJSONShapeIsStable(t *testing.T) {
 	doc := Render("sample.md", 1, []byte("hello *there*\n"))
 	b, err := json.Marshal(doc)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	// omitempty must keep absent fields out so the Gren decoder can rely on
 	// optional fields genuinely being absent rather than zero-valued.
-	if strings.Contains(string(b), `"level"`) || strings.Contains(string(b), `"lang"`) {
-		t.Errorf("empty optional fields leaked into JSON: %s", b)
-	}
+	assert.NotContains(t, string(b), `"level"`, "empty optional fields leaked into JSON")
+	assert.NotContains(t, string(b), `"lang"`, "empty optional fields leaked into JSON")
 }
 
 func TestEmptyDocument(t *testing.T) {
 	doc := Render("empty.md", 1, nil)
-	if doc.Root.Kind != KindDocument {
-		t.Errorf("want document root, got %q", doc.Root.Kind)
-	}
-	if len(doc.Root.Children) != 0 {
-		t.Errorf("want no children, got %d", len(doc.Root.Children))
-	}
+	assert.Equal(t, KindDocument, doc.Root.Kind)
+	assert.Empty(t, doc.Root.Children)
 }
 
 // sourceLine returns the 1-based line n of src.
@@ -235,9 +196,7 @@ func TestLinesMatchSource(t *testing.T) {
 
 	walk(doc.Root, func(n Node) {
 		if n.Line == 0 {
-			if n.Span != (Span{}) {
-				t.Errorf("%s %s: span %v but no line", n.Kind, n.ID, n.Span)
-			}
+			assert.Equal(t, Span{}, n.Span, "%s %s: a span but no line", n.Kind, n.ID)
 			return
 		}
 		want := 1 + strings.Count(string(src[:n.Span.Start]), "\n")
@@ -245,21 +204,15 @@ func TestLinesMatchSource(t *testing.T) {
 			// A fence is reported at the fence, not at the first line of code.
 			want--
 		}
-		if n.Line != want {
-			t.Errorf("%s %s: line %d, want %d", n.Kind, n.ID, n.Line, want)
-		}
+		assert.Equal(t, want, n.Line, "%s %s", n.Kind, n.ID)
 	})
 }
 
 func TestLineOfEachTopLevelBlock(t *testing.T) {
 	doc := Render("sample.md", 1, []byte(sample))
 	want := []int{1, 3, 5, 8, 10, 14, 18}
-	if len(doc.Root.Children) != len(want) {
-		t.Fatalf("want %d top-level blocks, got %d", len(want), len(doc.Root.Children))
-	}
+	require.Len(t, doc.Root.Children, len(want), "top-level blocks")
 	for i, block := range doc.Root.Children {
-		if block.Line != want[i] {
-			t.Errorf("block %d (%s) on line %d, want %d", i, block.Kind, block.Line, want[i])
-		}
+		assert.Equal(t, want[i], block.Line, "block %d (%s)", i, block.Kind)
 	}
 }

@@ -5,8 +5,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // newReview builds a Review over an empty directory. No git repository is
@@ -15,9 +17,7 @@ import (
 func newReview(t *testing.T, root string) *Review {
 	t.Helper()
 	rev, err := New(Options{Root: root})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
+	require.NoError(t, err, "New")
 	t.Cleanup(func() { _ = rev.Close() })
 	return rev
 }
@@ -25,13 +25,9 @@ func newReview(t *testing.T, root string) *Review {
 func writeState(t *testing.T, root string, content string) string {
 	t.Helper()
 	dir := filepath.Join(root, ".ai-reviewer")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.MkdirAll(dir, 0o755))
 	path := filepath.Join(dir, "state.json")
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
 	return path
 }
 
@@ -45,31 +41,22 @@ func TestCorruptStateIsKeptAndReported(t *testing.T) {
 
 	rev := newReview(t, root)
 
-	if notices := rev.Notices(); len(notices) != 1 {
-		t.Fatalf("notices = %v, want one", notices)
-	} else if !strings.Contains(notices[0], "state.json") {
-		t.Errorf("notice does not name the file: %q", notices[0])
-	}
+	notices := rev.Notices()
+	require.Len(t, notices, 1)
+	assert.Contains(t, notices[0], "state.json", "notice does not name the file")
 
 	matches, err := filepath.Glob(path + ".corrupt-*")
-	if err != nil || len(matches) != 1 {
-		t.Fatalf("want one quarantined file, got %v (%v)", matches, err)
-	}
+	require.NoError(t, err)
+	require.Len(t, matches, 1, "want one quarantined file")
 	kept, err := os.ReadFile(matches[0])
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(kept) != truncated {
-		t.Errorf("quarantined file was altered:\n%s", kept)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, truncated, string(kept), "quarantined file was altered")
 
 	// The review is usable, and saving over it must not touch what was kept.
-	if err := rev.save(); err != nil {
-		t.Fatalf("save: %v", err)
-	}
+	require.NoError(t, rev.save(), "save")
 	again, err := os.ReadFile(matches[0])
-	if err != nil || string(again) != truncated {
-		t.Errorf("quarantined file did not survive a save: %v", err)
+	if assert.NoError(t, err, "quarantined file did not survive a save") {
+		assert.Equal(t, truncated, string(again), "quarantined file did not survive a save")
 	}
 }
 
@@ -84,9 +71,7 @@ func TestASecondCorruptStateDoesNotOverwriteTheFirst(t *testing.T) {
 	_ = newReview(t, root)
 
 	matches, _ := filepath.Glob(path + ".corrupt-*")
-	if len(matches) != 2 {
-		t.Fatalf("want two quarantined files, got %v", matches)
-	}
+	require.Len(t, matches, 2, "want two quarantined files")
 }
 
 // When the file cannot even be moved aside, starting would overwrite it at the
@@ -99,24 +84,19 @@ func TestUnmovableCorruptStateRefusesToStart(t *testing.T) {
 	root := t.TempDir()
 	// A git root, so gitstore does not try to create its snapshot directory
 	// inside the one this test is about to seal.
-	if out, err := exec.Command("git", "-C", root, "init", "-q", "-b", "main").CombinedOutput(); err != nil {
-		t.Fatalf("git init: %v: %s", err, out)
-	}
+	out, err := exec.Command("git", "-C", root, "init", "-q", "-b", "main").CombinedOutput()
+	require.NoError(t, err, "git init: %s", out)
 	writeState(t, root, `{"threads":[ oops`)
 	dir := filepath.Join(root, ".ai-reviewer")
-	if err := os.Chmod(dir, 0o500); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.Chmod(dir, 0o500))
 	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
 
 	rev, err := New(Options{Root: root})
 	if err == nil {
 		_ = rev.Close()
-		t.Fatal("New succeeded despite an unreadable, unmovable state file")
 	}
-	if !strings.Contains(err.Error(), "state.json") {
-		t.Errorf("error does not name the file: %v", err)
-	}
+	require.Error(t, err, "New succeeded despite an unreadable, unmovable state file")
+	assert.Contains(t, err.Error(), "state.json", "error does not name the file")
 }
 
 func TestGoodStateLoadsWithoutNotices(t *testing.T) {
@@ -130,26 +110,16 @@ func TestGoodStateLoadsWithoutNotices(t *testing.T) {
 		},
 	}
 	data, err := json.Marshal(state)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	writeState(t, root, string(data))
 
 	rev := newReview(t, root)
-	if notices := rev.Notices(); len(notices) != 0 {
-		t.Errorf("unexpected notices: %v", notices)
-	}
+	assert.Empty(t, rev.Notices(), "unexpected notices")
 
 	threads := rev.ThreadsFor("spec.md")
-	if len(threads) != 2 {
-		t.Fatalf("want 2 threads, got %d", len(threads))
-	}
-	if threads[0].Status != StatusResolved {
-		t.Errorf("resolved thread came back %q", threads[0].Status)
-	}
-	if threads[1].Status != StatusOpen {
-		t.Errorf("in-flight thread came back %q, want open", threads[1].Status)
-	}
+	require.Len(t, threads, 2)
+	assert.Equal(t, StatusResolved, threads[0].Status, "resolved thread")
+	assert.Equal(t, StatusOpen, threads[1].Status, "in-flight thread")
 }
 
 // A round trip is what proves the format the quarantine protects is the one
@@ -170,21 +140,14 @@ func TestSaveAndLoadRoundTrip(t *testing.T) {
 	rev.sessions["spec.md"] = "session-1"
 	rev.mu.Unlock()
 
-	if err := rev.save(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, rev.save())
 
 	reloaded := newReview(t, root)
 	threads := reloaded.ThreadsFor("spec.md")
-	if len(threads) != 1 || threads[0].ID != "t1" {
-		t.Fatalf("threads did not survive a restart: %v", threads)
-	}
-	if threads[0].Status != StatusResolved {
-		t.Errorf("status = %q, want resolved", threads[0].Status)
-	}
-	if threads[0].Anchor.Quote != "why is there a link here" {
-		t.Errorf("anchor = %+v", threads[0].Anchor)
-	}
+	require.Len(t, threads, 1, "threads did not survive a restart")
+	require.Equal(t, "t1", threads[0].ID, "threads did not survive a restart")
+	assert.Equal(t, StatusResolved, threads[0].Status)
+	assert.Equal(t, "why is there a link here", threads[0].Anchor.Quote)
 }
 
 // A model chosen in the browser is a decision about this review, not about this
@@ -193,21 +156,13 @@ func TestTheChosenModelSurvivesARestart(t *testing.T) {
 	root := t.TempDir()
 
 	first := newReview(t, root)
-	if err := first.SetModel("sonnet"); err != nil {
-		t.Fatal(err)
-	}
-	if got := first.Settings().Model; got != "sonnet" {
-		t.Fatalf("model = %q after choosing sonnet", got)
-	}
+	require.NoError(t, first.SetModel("sonnet"))
+	require.Equal(t, "sonnet", first.Settings().Model, "model after choosing sonnet")
 	// Written when the choice is made, not at the end of some later turn.
-	if !strings.Contains(readState(t, root), `"model": "sonnet"`) {
-		t.Error("the choice reached state.json only after a further save")
-	}
+	assert.Contains(t, readState(t, root), `"model": "sonnet"`, "the choice reached state.json only after a further save")
 
 	restarted := newReview(t, root)
-	if got := restarted.Settings().Model; got != "sonnet" {
-		t.Errorf("model = %q after a restart, want sonnet", got)
-	}
+	assert.Equal(t, "sonnet", restarted.Settings().Model, "model after a restart")
 }
 
 // --model on the command line is the more recent decision and outranks the
@@ -216,25 +171,15 @@ func TestAnExplicitModelFlagOutranksTheStoredOne(t *testing.T) {
 	root := t.TempDir()
 
 	first := newReview(t, root)
-	if err := first.SetModel("sonnet"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, first.SetModel("sonnet"))
 
 	flagged, err := New(Options{Root: root, Model: "opus"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	t.Cleanup(func() { _ = flagged.Close() })
 
-	if got := flagged.Settings().Model; got != "opus" {
-		t.Errorf("model = %q, want the flag's opus", got)
-	}
-	if err := flagged.save(); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(readState(t, root), `"model": "opus"`) {
-		t.Error("the stored model did not follow the flag")
-	}
+	assert.Equal(t, "opus", flagged.Settings().Model, "want the flag's model")
+	require.NoError(t, flagged.save())
+	assert.Contains(t, readState(t, root), `"model": "opus"`, "the stored model did not follow the flag")
 }
 
 // Choosing the default means asking for no model at all, which is a real
@@ -243,26 +188,16 @@ func TestChoosingTheDefaultClearsTheStoredModel(t *testing.T) {
 	root := t.TempDir()
 
 	first := newReview(t, root)
-	if err := first.SetModel("haiku"); err != nil {
-		t.Fatal(err)
-	}
-	if err := first.SetModel(""); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, first.SetModel("haiku"))
+	require.NoError(t, first.SetModel(""))
 
-	if strings.Contains(readState(t, root), `"model"`) {
-		t.Errorf("state.json still names a model:\n%s", readState(t, root))
-	}
-	if got := newReview(t, root).Settings().Model; got != "" {
-		t.Errorf("model = %q after choosing the default, want empty", got)
-	}
+	assert.NotContains(t, readState(t, root), `"model"`, "state.json still names a model")
+	assert.Empty(t, newReview(t, root).Settings().Model, "model after choosing the default")
 }
 
 func readState(t *testing.T, root string) string {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(root, ".ai-reviewer", "state.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return string(data)
 }

@@ -7,6 +7,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // launches sets up a Session factory over the stub CLI in testdata, and returns
@@ -16,9 +19,7 @@ func launches(t *testing.T) (func(id string) *Session, func() []string) {
 
 	dir := t.TempDir()
 	bin, err := filepath.Abs("testdata/stub-claude")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	argvLog := filepath.Join(dir, "argv.log")
 	usedIDs := filepath.Join(dir, "used-ids")
@@ -57,9 +58,7 @@ func ask(t *testing.T, s *Session, prompt string) TurnResult {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	result, err := s.Ask(ctx, prompt, nil)
-	if err != nil {
-		t.Fatalf("Ask(%q): %v", prompt, err)
-	}
+	require.NoError(t, err, "Ask(%q)", prompt)
 	return result
 }
 
@@ -75,9 +74,7 @@ func TestFirstLaunchPinsThenResumes(t *testing.T) {
 	_ = s.Close() // as the idle reaper does
 	ask(t, s, "two")
 
-	if got := modes(); len(got) != 2 || got[0] != "--session-id" || got[1] != "--resume" {
-		t.Errorf("launch modes = %v, want [--session-id --resume]", got)
-	}
+	assert.Equal(t, []string{"--session-id", "--resume"}, modes(), "launch modes")
 }
 
 // A restarted daemon has the session id -- it is persisted -- but not the
@@ -94,26 +91,13 @@ func TestARestartedDaemonResumesRatherThanFailing(t *testing.T) {
 	// reading state.json.
 	restarted := newSession(testID)
 	result := ask(t, restarted, "after the restart")
-	if result.Text != "ok" {
-		t.Errorf("turn text = %q", result.Text)
-	}
+	assert.Equal(t, "ok", result.Text, "turn text")
 
-	got := modes()
-	want := []string{"--session-id", "--session-id", "--resume"}
-	if len(got) != len(want) {
-		t.Fatalf("launch modes = %v, want %v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("launch modes = %v, want %v", got, want)
-		}
-	}
+	require.Equal(t, []string{"--session-id", "--session-id", "--resume"}, modes(), "launch modes")
 
 	// And the recovery is once per Session, not once per turn.
 	ask(t, restarted, "another turn")
-	if n := len(modes()); n != 3 {
-		t.Errorf("%d launches after a second turn, want 3", n)
-	}
+	assert.Len(t, modes(), 3, "launches after a second turn")
 }
 
 // An id the CLI has never seen must not be resumed. Nothing sets everStarted
@@ -123,9 +107,7 @@ func TestAnUnknownIDIsPinnedNotResumed(t *testing.T) {
 
 	ask(t, newSession(testID), "first ever turn")
 
-	if got := modes(); len(got) != 1 || got[0] != "--session-id" {
-		t.Errorf("launch modes = %v, want [--session-id]", got)
-	}
+	assert.Equal(t, []string{"--session-id"}, modes(), "launch modes")
 }
 
 // A failure that is not the session-id refusal must surface, not spin.
@@ -135,9 +117,8 @@ func TestAnUnrelatedFailureIsReported(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if _, err := s.Ask(ctx, "hello", nil); err == nil {
-		t.Fatal("Ask succeeded with no CLI on disk")
-	}
+	_, err := s.Ask(ctx, "hello", nil)
+	require.Error(t, err, "Ask succeeded with no CLI on disk")
 }
 
 // The two refusals do not have the same shape, and only one of them is a dead
@@ -146,9 +127,7 @@ func TestAnUnrelatedFailureIsReported(t *testing.T) {
 func TestResumingAnUnknownIDIsAFailedTurnNotADeadProcess(t *testing.T) {
 	dir := t.TempDir()
 	bin, err := filepath.Abs("testdata/stub-claude")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	env := append(os.Environ(),
 		"ARGV_LOG="+filepath.Join(dir, "argv.log"),
 		"USED_IDS="+filepath.Join(dir, "used-ids"))
@@ -162,12 +141,8 @@ func TestResumingAnUnknownIDIsAFailedTurnNotADeadProcess(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	result, err := s.Ask(ctx, "hello", nil)
-	if err != nil {
-		t.Fatalf("Ask returned an error rather than a failed turn: %v", err)
-	}
-	if !result.IsError {
-		t.Error("turn did not report is_error")
-	}
+	require.NoError(t, err, "Ask returned an error rather than a failed turn")
+	assert.True(t, result.IsError, "turn did not report is_error")
 }
 
 // The process must start in the directory the caller asked for, because that
@@ -176,13 +151,9 @@ func TestResumingAnUnknownIDIsAFailedTurnNotADeadProcess(t *testing.T) {
 func TestTheProcessRunsInTheConfiguredDirectory(t *testing.T) {
 	dir := t.TempDir()
 	workDir := filepath.Join(dir, "workspace")
-	if err := os.MkdirAll(workDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.MkdirAll(workDir, 0o755))
 	bin, err := filepath.Abs("testdata/stub-claude")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	cwdLog := filepath.Join(dir, "cwd.log")
 	env := append(os.Environ(),
@@ -195,15 +166,11 @@ func TestTheProcessRunsInTheConfiguredDirectory(t *testing.T) {
 	ask(t, s, "hello")
 
 	got, err := os.ReadFile(cwdLog)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	// macOS hands out /var symlinks to /private/var, so compare resolved paths.
 	want, _ := filepath.EvalSymlinks(workDir)
 	have, _ := filepath.EvalSymlinks(strings.TrimSpace(string(got)))
-	if have != want {
-		t.Errorf("process ran in %q, want %q", have, want)
-	}
+	assert.Equal(t, want, have, "the directory the process ran in")
 }
 
 // A model chosen mid-review reaches the next launch, and the conversation is
@@ -212,9 +179,7 @@ func TestTheProcessRunsInTheConfiguredDirectory(t *testing.T) {
 func TestChangingTheModelRelaunchesAndResumes(t *testing.T) {
 	dir := t.TempDir()
 	bin, err := filepath.Abs("testdata/stub-claude")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	argvLog := filepath.Join(dir, "argv.log")
 	env := append(os.Environ(),
 		"ARGV_LOG="+argvLog,
@@ -224,35 +189,21 @@ func TestChangingTheModelRelaunchesAndResumes(t *testing.T) {
 	t.Cleanup(func() { _ = s.Close() })
 
 	ask(t, s, "before")
-	if !s.Running() {
-		t.Fatal("no process to relaunch")
-	}
+	require.True(t, s.Running(), "no process to relaunch")
 
 	s.SetModel("sonnet")
 
 	// The running process is left alone until the next turn: a setting change
 	// must not interrupt a question already in flight.
-	if !s.Running() {
-		t.Error("the process was killed by a setting change")
-	}
+	assert.True(t, s.Running(), "the process was killed by a setting change")
 
 	ask(t, s, "after")
 
 	data, err := os.ReadFile(argvLog)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-	if len(lines) != 2 {
-		t.Fatalf("%d launches, want 2:\n%s", len(lines), data)
-	}
-	if strings.Contains(lines[0], "--model") {
-		t.Errorf("first launch already had a model: %s", lines[0])
-	}
-	if !strings.Contains(lines[1], "--model sonnet") {
-		t.Errorf("second launch did not carry the new model: %s", lines[1])
-	}
-	if !strings.Contains(lines[1], "--resume") {
-		t.Errorf("second launch restarted the conversation instead of resuming: %s", lines[1])
-	}
+	require.Len(t, lines, 2, "launches:\n%s", data)
+	assert.NotContains(t, lines[0], "--model", "first launch already had a model")
+	assert.Contains(t, lines[1], "--model sonnet", "second launch did not carry the new model")
+	assert.Contains(t, lines[1], "--resume", "second launch restarted the conversation instead of resuming")
 }

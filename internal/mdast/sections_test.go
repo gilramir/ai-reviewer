@@ -1,8 +1,10 @@
 package mdast
 
 import (
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestSectionsSplitAtTheRepeatedHeadingLevel(t *testing.T) {
@@ -28,28 +30,20 @@ Body of the third.
 	rendered := Flatten(src)
 	sections := rendered.Sections(0)
 
-	if len(sections) != 4 {
-		t.Fatalf("got %d sections, want 4: %+v", len(sections), sections)
-	}
+	require.Len(t, sections, 4, "%+v", sections)
 
 	// The title opens a section of its own: a heading shallower than the level
 	// the document divides at still divides it.
 	titles := []string{"A title", "First", "Second", "Third"}
 	for i, want := range titles {
-		if sections[i].Title != want {
-			t.Errorf("section %d title = %q, want %q", i, sections[i].Title, want)
-		}
+		assert.Equal(t, want, sections[i].Title, "section %d title", i)
 	}
 
-	if got := rendered.Slice(sections[0]); !contains(got, "A title") || !contains(got, "Opening words") {
-		t.Errorf("opening section = %q, want the title and the words under it", got)
-	}
-	if got := rendered.Slice(sections[2]); !contains(got, "Body of the second") {
-		t.Errorf("second section = %q", got)
-	}
-	if contains(rendered.Slice(sections[2]), "Body of the third") {
-		t.Errorf("second section ran into the third")
-	}
+	opening := rendered.Slice(sections[0])
+	assert.Contains(t, opening, "A title", "the opening section holds the title")
+	assert.Contains(t, opening, "Opening words", "the opening section holds the words under the title")
+	assert.Contains(t, rendered.Slice(sections[2]), "Body of the second")
+	assert.NotContains(t, rendered.Slice(sections[2]), "Body of the third", "second section ran into the third")
 }
 
 // A section's text has to be a literal substring of the text Locate searches,
@@ -60,10 +54,7 @@ func TestSectionTextIsASubstringOfTheDocument(t *testing.T) {
 
 	rendered := Flatten(src)
 	for _, section := range rendered.Sections(0) {
-		slice := rendered.Slice(section)
-		if !contains(rendered.Text, slice) {
-			t.Fatalf("section %q is not a substring of %q", slice, rendered.Text)
-		}
+		require.Contains(t, rendered.Text, rendered.Slice(section), "a section is not a substring of the document")
 	}
 }
 
@@ -73,39 +64,25 @@ func TestContentBeforeTheFirstHeadingIsItsOwnSection(t *testing.T) {
 	rendered := Flatten([]byte("Loose opening words.\n\n## First\n\nBody.\n\n## Second\n\nMore.\n"))
 
 	sections := rendered.Sections(0)
-	if len(sections) != 3 {
-		t.Fatalf("got %d sections, want 3: %+v", len(sections), sections)
-	}
-	if sections[0].Title != "" {
-		t.Errorf("untitled opening section was named %q", sections[0].Title)
-	}
-	if !contains(rendered.Slice(sections[0]), "Loose opening words") {
-		t.Errorf("opening section = %q", rendered.Slice(sections[0]))
-	}
+	require.Len(t, sections, 3, "%+v", sections)
+	assert.Empty(t, sections[0].Title, "untitled opening section was named")
+	assert.Contains(t, rendered.Slice(sections[0]), "Loose opening words")
 }
 
 func TestSectionsWithoutHeadingsAreOneSection(t *testing.T) {
 	rendered := Flatten([]byte("Just a paragraph.\n\nAnd another.\n"))
 
 	sections := rendered.Sections(0)
-	if len(sections) != 1 {
-		t.Fatalf("got %d sections, want 1", len(sections))
-	}
-	if !contains(rendered.Slice(sections[0]), "And another") {
-		t.Errorf("the one section is missing the second paragraph")
-	}
+	require.Len(t, sections, 1)
+	assert.Contains(t, rendered.Slice(sections[0]), "And another", "the one section is missing the second paragraph")
 }
 
 func TestSectionsSplitAtTheTopWhenNoLevelRepeats(t *testing.T) {
 	rendered := Flatten([]byte("# One\n\nBody.\n\n## Under one\n\nMore.\n"))
 
 	sections := rendered.Sections(0)
-	if len(sections) != 1 {
-		t.Fatalf("got %d sections, want 1: %+v", len(sections), sections)
-	}
-	if sections[0].Title != "One" {
-		t.Errorf("title = %q, want One", sections[0].Title)
-	}
+	require.Len(t, sections, 1, "%+v", sections)
+	assert.Equal(t, "One", sections[0].Title)
 }
 
 func TestLongSectionsAreCappedOnBlockBoundaries(t *testing.T) {
@@ -116,23 +93,13 @@ func TestLongSectionsAreCappedOnBlockBoundaries(t *testing.T) {
 	rendered := Flatten(src)
 	sections := rendered.Sections(40)
 
-	if len(sections) < 3 {
-		t.Fatalf("got %d sections, want the long one split: %+v", len(sections), sections)
-	}
+	require.GreaterOrEqual(t, len(sections), 3, "want the long one split: %+v", sections)
 	for _, section := range sections {
 		// Every piece must still begin and end on a block boundary, so no
 		// quote is ever offered half a sentence.
-		slice := rendered.Slice(section)
-		if !contains(rendered.Text, slice) {
-			t.Fatalf("piece %q is not a substring of the document", slice)
-		}
+		require.Contains(t, rendered.Text, rendered.Slice(section), "a piece is not a substring of the document")
 	}
 	// The continuations are still that section as far as the reviewer is told.
-	if sections[0].Title != "Long" || sections[1].Title != "Long" {
-		t.Errorf("continuation lost its title: %+v", sections[:2])
-	}
-}
-
-func contains(haystack, needle string) bool {
-	return strings.Contains(haystack, needle)
+	assert.Equal(t, "Long", sections[0].Title, "continuation lost its title: %+v", sections[:2])
+	assert.Equal(t, "Long", sections[1].Title, "continuation lost its title: %+v", sections[:2])
 }

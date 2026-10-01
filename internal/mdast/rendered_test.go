@@ -1,6 +1,11 @@
 package mdast
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
 
 func TestFlattenIsWhatTheReaderSees(t *testing.T) {
 	tests := []struct {
@@ -42,9 +47,7 @@ func TestFlattenIsWhatTheReaderSees(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := Flatten([]byte(tt.src)).Text; got != tt.want {
-				t.Errorf("Flatten(%q).Text = %q, want %q", tt.src, got, tt.want)
-			}
+			assert.Equal(t, tt.want, Flatten([]byte(tt.src)).Text, "Flatten(%q).Text", tt.src)
 		})
 	}
 }
@@ -57,12 +60,8 @@ func TestSourceMapsBackToTheBytes(t *testing.T) {
 
 	at := indexOf(t, rendered.Text, "widgets guide -- start")
 	start, end, ok := rendered.Source(at, at+len("widgets guide -- start"))
-	if !ok {
-		t.Fatal("Source did not map a range it had just produced")
-	}
-	if got := src[start:end]; got != "widgets guide](widgets.md)** -- start" {
-		t.Errorf("source = %q", got)
-	}
+	require.True(t, ok, "Source did not map a range it had just produced")
+	assert.Equal(t, "widgets guide](widgets.md)** -- start", src[start:end])
 }
 
 // A run that carries no source of its own -- the space a line break stands for
@@ -73,22 +72,16 @@ func TestSourceAcrossALineBreak(t *testing.T) {
 
 	at := indexOf(t, rendered.Text, "runs across two")
 	start, end, ok := rendered.Source(at, at+len("runs across two"))
-	if !ok {
-		t.Fatal("Source did not map across the line break")
-	}
-	if got := src[start:end]; got != "runs\nacross two" {
-		t.Errorf("source = %q", got)
-	}
+	require.True(t, ok, "Source did not map across the line break")
+	assert.Equal(t, "runs\nacross two", src[start:end])
 }
 
 func TestSourceRefusesAnEmptyRange(t *testing.T) {
 	rendered := Flatten([]byte("Some prose.\n"))
-	if _, _, ok := rendered.Source(3, 3); ok {
-		t.Error("an empty range was mapped")
-	}
-	if _, _, ok := rendered.Source(0, 9999); ok {
-		t.Error("a range past the end was mapped")
-	}
+	_, _, ok := rendered.Source(3, 3)
+	assert.False(t, ok, "an empty range was mapped")
+	_, _, ok = rendered.Source(0, 9999)
+	assert.False(t, ok, "a range past the end was mapped")
 }
 
 func indexOf(t *testing.T, text, want string) int {
@@ -98,6 +91,6 @@ func indexOf(t *testing.T, text, want string) int {
 			return i
 		}
 	}
-	t.Fatalf("%q is not in the rendered text %q", want, text)
+	require.FailNow(t, "passage not found", "%q is not in the rendered text %q", want, text)
 	return 0
 }

@@ -5,8 +5,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/gilramir/ai-reviewer/internal/review"
 )
@@ -35,18 +37,15 @@ func TestLiveClaude(t *testing.T) {
 	} {
 		cmd := exec.Command("git", args...)
 		cmd.Dir = root
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v: %s", args, err, out)
-		}
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, "git %v: %s", args, out)
 	}
 
 	const doc = `# Retry policy
 
 The system SHALL retry indefinitely until the operation succeeds.
 `
-	if err := os.WriteFile(filepath.Join(root, "spec.md"), []byte(doc), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(root, "spec.md"), []byte(doc), 0o644))
 	gitRun(t, root, "add", ".")
 	gitRun(t, root, "commit", "-qm", "initial")
 
@@ -57,9 +56,7 @@ The system SHALL retry indefinitely until the operation succeeds.
 		Model:        "haiku",
 		MaxBudgetUSD: 1,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer rev.Close()
 
 	const secret = "live-test-secret"
@@ -88,22 +85,15 @@ The system SHALL retry indefinitely until the operation succeeds.
 	})
 	edit := waitFor(t, conn, "turnEnd")
 
-	if edited, _ := edit["edited"].(bool); !edited {
-		t.Fatalf("the model did not edit the document: %v", edit)
-	}
+	edited, _ := edit["edited"].(bool)
+	require.True(t, edited, "the model did not edit the document: %v", edit)
 
 	updated, err := os.ReadFile(filepath.Join(root, "spec.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	t.Logf("document is now:\n%s", updated)
 
-	if strings.Contains(string(updated), "SHALL retry indefinitely") {
-		t.Errorf("the original wording survived:\n%s", updated)
-	}
+	assert.NotContains(t, string(updated), "SHALL retry indefinitely", "the original wording survived")
 	message := gitRun(t, root, "log", "-1", "--format=%B")
 	t.Logf("commit:\n%s", message)
-	if !strings.Contains(message, "Review-Thread:") {
-		t.Errorf("commit lacks the thread trailer:\n%s", message)
-	}
+	assert.Contains(t, message, "Review-Thread:", "commit lacks the thread trailer")
 }

@@ -3,23 +3,21 @@ package review
 import (
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func loc(t *testing.T, src string, a Anchor) string {
 	t.Helper()
 	at, ok := Locate(src, a)
-	if !ok {
-		t.Fatalf("anchor %q not located in %q", a.Quote, src)
-	}
+	require.True(t, ok, "anchor %q not located in %q", a.Quote, src)
 	return src[at.Start:at.End]
 }
 
 func TestExactMatch(t *testing.T) {
 	src := "The system SHALL retry indefinitely.\n"
-	got := loc(t, src, Anchor{Quote: "SHALL retry indefinitely"})
-	if got != "SHALL retry indefinitely" {
-		t.Errorf("got %q", got)
-	}
+	assert.Equal(t, "SHALL retry indefinitely", loc(t, src, Anchor{Quote: "SHALL retry indefinitely"}))
 }
 
 // The browser hands us rendered text, so a selection spanning bold or code
@@ -39,10 +37,7 @@ func TestMatchesAcrossInlineMarkup(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := loc(t, tc.src, Anchor{Quote: tc.quote})
-			if got != tc.want {
-				t.Errorf("got %q, want %q", got, tc.want)
-			}
+			assert.Equal(t, tc.want, loc(t, tc.src, Anchor{Quote: tc.quote}))
 		})
 	}
 }
@@ -50,10 +45,7 @@ func TestMatchesAcrossInlineMarkup(t *testing.T) {
 // A paragraph wrapped across source lines renders as one run of text.
 func TestMatchesAcrossSoftWrap(t *testing.T) {
 	src := "The system SHALL retry\nindefinitely until it succeeds.\n"
-	got := loc(t, src, Anchor{Quote: "SHALL retry indefinitely until"})
-	if got != "SHALL retry\nindefinitely until" {
-		t.Errorf("got %q", got)
-	}
+	assert.Equal(t, "SHALL retry\nindefinitely until", loc(t, src, Anchor{Quote: "SHALL retry indefinitely until"}))
 }
 
 func TestPrefixAndSuffixDisambiguate(t *testing.T) {
@@ -66,42 +58,32 @@ func TestPrefixAndSuffixDisambiguate(t *testing.T) {
 		Quote:  "Retry policy",
 		Suffix: " applies to reads.",
 	})
-	if got := src[first.Start:]; got[:30] != "Retry policy applies to reads." {
-		t.Errorf("chose the wrong occurrence: %q", got[:30])
-	}
+	assert.Equal(t, "Retry policy applies to reads.", src[first.Start:][:30], "chose the wrong occurrence")
 
 	second := Locate2(t, src, Anchor{
 		Quote:  "Retry policy",
 		Suffix: " applies to writes.",
 	})
-	if got := src[second.Start:]; got[:31] != "Retry policy applies to writes." {
-		t.Errorf("chose the wrong occurrence: %q", got[:31])
-	}
-	if first.Start == second.Start {
-		t.Error("both anchors resolved to the same occurrence")
-	}
+	assert.Equal(t, "Retry policy applies to writes.", src[second.Start:][:31], "chose the wrong occurrence")
+	assert.NotEqual(t, first.Start, second.Start, "both anchors resolved to the same occurrence")
 }
 
 // Locate2 is a test helper that fails rather than returning a flag.
 func Locate2(t *testing.T, src string, a Anchor) Location {
 	t.Helper()
 	at, ok := Locate(src, a)
-	if !ok {
-		t.Fatalf("anchor %q not located", a.Quote)
-	}
+	require.True(t, ok, "anchor %q not located", a.Quote)
 	return at
 }
 
 func TestMissingQuoteReportsNotFound(t *testing.T) {
-	if _, ok := Locate("nothing to see", Anchor{Quote: "a passage that was deleted"}); ok {
-		t.Error("expected a deleted passage to fail to locate")
-	}
+	_, ok := Locate("nothing to see", Anchor{Quote: "a passage that was deleted"})
+	assert.False(t, ok, "expected a deleted passage to fail to locate")
 }
 
 func TestEmptyQuoteIsNotAnAnchor(t *testing.T) {
-	if _, ok := Locate("some text", Anchor{Quote: "   "}); ok {
-		t.Error("whitespace-only quote should not locate")
-	}
+	_, ok := Locate("some text", Anchor{Quote: "   "})
+	assert.False(t, ok, "whitespace-only quote should not locate")
 }
 
 // A match must start on the words themselves, never on the syntax before them,
@@ -109,12 +91,8 @@ func TestEmptyQuoteIsNotAnAnchor(t *testing.T) {
 func TestMatchStartsOnContent(t *testing.T) {
 	src := "Text with **bold words** in it."
 	at, ok := Locate(src, Anchor{Quote: "bold words"})
-	if !ok {
-		t.Fatal("not located")
-	}
-	if src[at.Start] != 'b' {
-		t.Errorf("match starts at %q, want the letter b", src[at.Start])
-	}
+	require.True(t, ok, "not located")
+	assert.Equal(t, byte('b'), src[at.Start], "match should start at the letter b")
 }
 
 func TestLocatesAfterAnEarlierEdit(t *testing.T) {
@@ -125,26 +103,16 @@ func TestLocatesAfterAnEarlierEdit(t *testing.T) {
 
 	from, _ := Locate(before, anchor)
 	to, ok := Locate(after, anchor)
-	if !ok {
-		t.Fatal("anchor lost after an unrelated edit earlier in the file")
-	}
-	if from.Start == to.Start {
-		t.Fatal("test is not exercising a shift; offsets should differ")
-	}
-	if got := after[to.Start:to.End]; got != "retry policy is strict" {
-		t.Errorf("relocated to %q", got)
-	}
+	require.True(t, ok, "anchor lost after an unrelated edit earlier in the file")
+	require.NotEqual(t, from.Start, to.Start, "test is not exercising a shift; offsets should differ")
+	assert.Equal(t, "retry policy is strict", after[to.Start:to.End])
 }
 
 func TestFindAllDoesNotOverlap(t *testing.T) {
 	// "aa" inside "aaaa" must yield two matches, not three overlapping ones.
 	got := findAll("aaaa", "aa")
-	if len(got) != 2 {
-		t.Fatalf("want 2 non-overlapping matches, got %d: %v", len(got), got)
-	}
-	if got[0].End > got[1].Start {
-		t.Errorf("matches overlap: %v", got)
-	}
+	require.Len(t, got, 2, "want 2 non-overlapping matches")
+	assert.LessOrEqual(t, got[0].End, got[1].Start, "matches overlap: %v", got)
 }
 
 // TestMatchesAcrossSoftWrapInAnIndentedBlock is the case a reviewer hits first,
@@ -164,13 +132,10 @@ func TestMatchesAcrossSoftWrapInAnIndentedBlock(t *testing.T) {
 	const quote = "The three doors out of a\nGren program and which one is yours,"
 
 	at, ok := Locate(src, Anchor{Quote: quote})
-	if !ok {
-		t.Fatal("passage not found; a comment on it would be refused")
-	}
+	require.True(t, ok, "passage not found; a comment on it would be refused")
 	got := src[at.Start:at.End]
-	if !strings.HasPrefix(got, "The three doors") || !strings.HasSuffix(got, "is yours,") {
-		t.Errorf("located %q", got)
-	}
+	assert.True(t, strings.HasPrefix(got, "The three doors"), "located %q", got)
+	assert.True(t, strings.HasSuffix(got, "is yours,"), "located %q", got)
 }
 
 // The same selection with the wrap as a space, which is what some browsers give
@@ -184,9 +149,8 @@ func TestMatchesAcrossSoftWrapAsASpace(t *testing.T) {
 		"prose wraps\n    onto the next",
 		"prose wraps  \n  onto the next",
 	} {
-		if _, ok := Locate(src, Anchor{Quote: quote}); !ok {
-			t.Errorf("quote %q not found", quote)
-		}
+		_, ok := Locate(src, Anchor{Quote: quote})
+		assert.True(t, ok, "quote %q not found", quote)
 	}
 }
 
@@ -195,9 +159,8 @@ func TestMatchesAcrossSoftWrapAsASpace(t *testing.T) {
 func TestWhitespaceFoldingDoesNotJoinWords(t *testing.T) {
 	const src = "one two three\n"
 	for _, quote := range []string{"onetwo", "two three four"} {
-		if _, ok := Locate(src, Anchor{Quote: quote}); ok {
-			t.Errorf("quote %q should not have matched", quote)
-		}
+		_, ok := Locate(src, Anchor{Quote: quote})
+		assert.False(t, ok, "quote %q should not have matched", quote)
 	}
 }
 
@@ -212,9 +175,7 @@ func TestMatchesOutOfALinkAndIntoTheTextAfterIt(t *testing.T) {
 `
 	at := locate(t, src, Anchor{Quote: "Turbo Vision, from Gren -- what you are programming"})
 
-	if got := src[at.Start:at.End]; got != "Turbo Vision, from Gren](widgets.md)** -- what you are programming" {
-		t.Errorf("source span = %q", got)
-	}
+	assert.Equal(t, "Turbo Vision, from Gren](widgets.md)** -- what you are programming", src[at.Start:at.End], "source span")
 }
 
 // The whole bullet, wrap and all, which is what a reviewer selects when they
@@ -226,9 +187,8 @@ func TestMatchesAWholeBulletAcrossItsWrap(t *testing.T) {
 	quote := "Turbo Vision, from Gren -- what you are programming\nagainst. The programming model."
 	at := locate(t, src, Anchor{Quote: quote})
 
-	if got := src[at.Start:at.End]; !strings.HasSuffix(got, "The programming model.") {
-		t.Errorf("source span = %q, want it to reach the end of the bullet", got)
-	}
+	got := src[at.Start:at.End]
+	assert.True(t, strings.HasSuffix(got, "The programming model."), "source span = %q, want it to reach the end of the bullet", got)
 }
 
 // An image contributes its alt text to the page but nothing to a selection, and
@@ -237,9 +197,7 @@ func TestMatchesAcrossAnImage(t *testing.T) {
 	const src = "Before ![a screenshot of the editor](shots/editor.png) after the picture.\n"
 
 	at := locate(t, src, Anchor{Quote: "Before  after the picture."})
-	if got := src[at.Start:at.End]; got != src[:len(src)-1] {
-		t.Errorf("source span = %q", got)
-	}
+	assert.Equal(t, src[:len(src)-1], src[at.Start:at.End], "source span")
 }
 
 // Inline code renders as its contents; the backticks are not on screen.
@@ -247,9 +205,7 @@ func TestMatchesOutOfACodeSpan(t *testing.T) {
 	const src = "Set `Copied.toSystem = False` and nothing reaches the clipboard.\n"
 
 	at := locate(t, src, Anchor{Quote: "Copied.toSystem = False and nothing reaches"})
-	if got := src[at.Start:at.End]; got != "Copied.toSystem = False` and nothing reaches" {
-		t.Errorf("source span = %q", got)
-	}
+	assert.Equal(t, "Copied.toSystem = False` and nothing reaches", src[at.Start:at.End], "source span")
 }
 
 // A selection that runs from one paragraph into the next carries the blank line
@@ -258,9 +214,7 @@ func TestMatchesAcrossTwoBlocks(t *testing.T) {
 	const src = "The first paragraph ends here.\n\nThe second one starts here.\n"
 
 	at := locate(t, src, Anchor{Quote: "ends here.\n\nThe second one"})
-	if got := src[at.Start:at.End]; got != "ends here.\n\nThe second one" {
-		t.Errorf("source span = %q", got)
-	}
+	assert.Equal(t, "ends here.\n\nThe second one", src[at.Start:at.End], "source span")
 }
 
 // A heading is a block like any other, and its hashes are not on screen.
@@ -268,9 +222,7 @@ func TestMatchesAHeading(t *testing.T) {
 	const src = "# gren-tvision documentation\n\nTurbo Vision terminal UIs.\n"
 
 	at := locate(t, src, Anchor{Quote: "gren-tvision documentation"})
-	if got := src[at.Start:at.End]; got != "gren-tvision documentation" {
-		t.Errorf("source span = %q", got)
-	}
+	assert.Equal(t, "gren-tvision documentation", src[at.Start:at.End], "source span")
 }
 
 // The passage the hand editor hands back is the source under the selection, so
@@ -279,16 +231,12 @@ func TestSpanIsTheSourceUnderTheSelection(t *testing.T) {
 	const src = "A sentence with **bold words** in the middle of it.\n"
 
 	at := locate(t, src, Anchor{Quote: "bold words"})
-	if got := src[at.Start:at.End]; got != "bold words" {
-		t.Errorf("source span = %q, want the words without their syntax", got)
-	}
+	assert.Equal(t, "bold words", src[at.Start:at.End], "want the words without their syntax")
 }
 
 func locate(t *testing.T, src string, a Anchor) Location {
 	t.Helper()
 	at, ok := Locate(src, a)
-	if !ok {
-		t.Fatalf("Locate did not find %q", a.Quote)
-	}
+	require.True(t, ok, "Locate did not find %q", a.Quote)
 	return at
 }
