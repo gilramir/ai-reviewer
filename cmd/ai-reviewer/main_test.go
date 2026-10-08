@@ -1,6 +1,9 @@
 package main
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -126,4 +129,21 @@ func TestLanding(t *testing.T) {
 			}
 		})
 	}
+}
+
+// log-view without a file looks where serve --claude-log writes: the workspace
+// root, which from a subdirectory of a repository is the top of it, not here.
+func TestTheDefaultLogIsAtTheWorkspaceRoot(t *testing.T) {
+	repo := t.TempDir()
+	out, err := exec.Command("git", "init", "-q", repo).CombinedOutput()
+	require.NoError(t, err, "git init: %s", out)
+	sub := filepath.Join(repo, "doc", "specs")
+	require.NoError(t, os.MkdirAll(sub, 0o755))
+
+	got, err := defaultLogPath(sub)
+	require.NoError(t, err)
+	// macOS hands out /var symlinks to /private/var, and git reports the
+	// resolved one.
+	want, _ := filepath.EvalSymlinks(repo)
+	assert.Equal(t, filepath.Join(want, ".ai-reviewer", defaultLogName), got)
 }

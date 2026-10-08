@@ -536,9 +536,10 @@ you rather than to any one review.
 
 `serve --claude-log` records every byte that crosses a claude process's pipes in
 SQLite, at `.ai-reviewer/claude.db` (`--claude-log-file FILE` puts it elsewhere).
-`ai-reviewer log-view FILE` serves a two-pane page for reading it, packet-viewer
+`ai-reviewer log-view [FILE]` serves a two-pane page for reading it, packet-viewer
 style, and can run while the serve writing it is still going: it polls for
-frames after the last one it has.
+frames after the last one it has. Without FILE it reads the default log of the
+workspace it is run in, found by the same `defaultLogPath` serve writes with.
 
 There are no request/response pairs on that pipe to log. One user frame on
 stdin is answered by any number of frames on stdout, ending with `result`, so

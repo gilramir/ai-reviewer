@@ -69,10 +69,10 @@ cost, start with `--claude-log`. Every frame is recorded in
 `.ai-reviewer/claude.db`, and
 
 ```sh
-ai-reviewer log-view .ai-reviewer/claude.db
+ai-reviewer log-view
 ```
 
-serves a page for reading it on `127.0.0.1:8081`: one frame per line above, the
+run anywhere in the same repository, or given the file to read, serves a page for reading it on `127.0.0.1:8081`: one frame per line above, the
 selected one as a JSON tree below. The log holds every file the model read, so
 it is readable by you alone. `log-view --listen-all PORT` serves it to the LAN,
 behind the same password as the review.

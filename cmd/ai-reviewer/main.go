@@ -197,9 +197,11 @@ func addLogViewCommand(ap *argparse.ArgumentParser) {
 		Values:      opts,
 	})
 	cmd.Add(&argparse.Argument{
-		Name:    "file",
-		MetaVar: "FILE",
-		Help:    "The log to read",
+		Name:        "file",
+		MetaVar:     "FILE",
+		NumArgsGlob: "?",
+		Help: "The log to read; by default the one serve --claude-log writes, " +
+			".ai-reviewer/" + defaultLogName + " at the workspace root",
 	})
 	cmd.Add(&argparse.Argument{
 		Switches: []string{"--listen"},
@@ -334,15 +336,13 @@ func runServe(_ *argparse.Command, values argparse.Values) error {
 // where the review keeps everything else it writes, and what .gitignore covers.
 func openClaudeLog(root, path string) (*wirelog.Log, string, error) {
 	if path == "" {
-		work, err := gitstore.Workspace(root)
-		if err != nil {
+		var err error
+		if path, err = defaultLogPath(root); err != nil {
 			return nil, "", err
 		}
-		dir := filepath.Join(work, ".ai-reviewer")
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			return nil, "", err
 		}
-		path = filepath.Join(dir, defaultLogName)
 	}
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
@@ -355,6 +355,17 @@ func openClaudeLog(root, path string) (*wirelog.Log, string, error) {
 	return log, path, nil
 }
 
+// defaultLogPath is where serve --claude-log writes for a review of root, and so
+// where log-view looks when it is not told. Both ask the one function, so the
+// reader cannot drift from the writer.
+func defaultLogPath(root string) (string, error) {
+	work, err := gitstore.Workspace(root)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(work, ".ai-reviewer", defaultLogName), nil
+}
+
 // runLogView serves the viewer for a wire log. It can run while the serve that
 // writes the log is still going, and the page follows along.
 func runLogView(_ *argparse.Command, values argparse.Values) error {
@@ -363,6 +374,17 @@ func runLogView(_ *argparse.Command, values argparse.Values) error {
 	listen, err := listenAddress(opts.Listen, defaultLogListen, opts.ListenAll)
 	if err != nil {
 		return err
+	}
+
+	// Run from anywhere in the repository a review was served from, the log is
+	// found without naming it, the way serve found where to put it.
+	if opts.File == "" {
+		if opts.File, err = defaultLogPath("."); err != nil {
+			return err
+		}
+		if _, err := os.Stat(opts.File); errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("no log at %s; serve writes one there when started with --claude-log, or name the file to read", opts.File)
+		}
 	}
 
 	log, err := wirelog.OpenReader(opts.File)
