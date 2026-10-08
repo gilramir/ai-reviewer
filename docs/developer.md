@@ -220,6 +220,26 @@ the same reach it has when you run `claude` there yourself. What the *browser*
 can open is unchanged: still `--root` and below, still refusing paths that escape
 it.
 
+**Reaching past the repository: `--add-dir`.** In `-p` mode there is nobody to
+answer the CLI's permission prompt, so a path outside the working directory is
+not asked about, it is refused. `serve --add-dir DIR` (repeatable) passes each
+directory to every claude process as `--add-dir`, made absolute first, because
+the CLI would resolve a relative one against the repository root and not
+against where it was typed. The model can edit there as well as read, since
+`acceptEdits` accepts edits in any directory it was given, but `gitstore` only
+records paths inside the workspace, so those edits are not committed.
+
+**Refusals are shown, not just suffered.** The CLI lists each refused call in
+the `permission_denials` of its `result` frame. The model sees only a tool
+error and tends to say "I couldn't read that file" with no path. `claudeproc`
+folds the list into `TurnResult.Denials`, and `review` keeps it on the reply's
+`Message` (`denied`) so it is persisted and redrawn beside that reply. Each
+entry is marked `outside` when the path lies beyond the workspace and every
+`--add-dir`, which `--add-dir` can fix. Anything else was within reach and
+turned down by a rule, most likely a `permissions.deny` in a settings file the
+CLI loaded, which no flag of the daemon's overrides. A reviewing pass has no
+reply to attach a refusal to, so it reports each one as an error notice.
+
 The wire log (`serve --claude-log`) holds every prompt and every file the model
 read, which is more than the review exposes, so it is treated as more
 sensitive: the file is created `0600`, and `log-view` has no password and

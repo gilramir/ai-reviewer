@@ -39,6 +39,12 @@ type Config struct {
 	// AllowedTools restricts the built-in tool set. Bash is deliberately absent
 	// from the default.
 	AllowedTools []string
+	// AddDirs are directories beyond WorkDir the tools may reach. The working
+	// directory is the CLI's permission boundary, and in -p mode there is
+	// nobody to answer the prompt for a path outside it, so the read is simply
+	// refused. Absolute paths: the CLI resolves a relative one against WorkDir,
+	// which is not where whoever typed it was standing.
+	AddDirs []string
 	// MaxBudgetUSD caps spend for a single process, 0 for no cap.
 	MaxBudgetUSD float64
 	// Env, when non-nil, replaces the child's environment.
@@ -97,6 +103,19 @@ type TurnResult struct {
 	CostUSD float64
 	// IsError reports a turn the CLI itself considered failed.
 	IsError bool
+	// Denials are the tool calls the CLI refused during the turn. The model
+	// sees a refusal as a tool error and usually says only that it could not
+	// do something; this is the record of what it was refused, and where.
+	Denials []Denial
+}
+
+// Denial is one tool call the CLI refused to run.
+type Denial struct {
+	Tool string
+	// Target is what the call was aimed at: a file path for Read and Edit, the
+	// search directory or pattern for Grep and Glob. Empty when the input names
+	// nothing recognisable.
+	Target string
 }
 
 // Session is one conversation with one Claude Code process. Turns are
@@ -383,6 +402,11 @@ func (s *Session) args() []string {
 		"--strict-mcp-config",
 		"--tools", strings.Join(s.cfg.AllowedTools, ","),
 	}
+	// One switch per directory. --add-dir is variadic, so a list behind a
+	// single switch would swallow whatever argument came after it.
+	for _, dir := range s.cfg.AddDirs {
+		args = append(args, "--add-dir", dir)
+	}
 
 	if s.resumable() {
 		args = append(args, "--resume", s.ID)
@@ -543,12 +567,36 @@ func (s *Session) applyFrame(msg streamFrame, result *TurnResult, seen map[strin
 		}
 		result.CostUSD = msg.TotalCostUSD
 		result.IsError = msg.IsError
+		result.Denials = denials(msg.PermissionDenials)
 		s.mu.Lock()
 		s.lastUse = time.Now()
 		s.mu.Unlock()
 		return true
 	}
 	return false
+}
+
+// denials folds the CLI's refusals into one entry per tool and target. A model
+// refused once tends to try the same path again, sometimes spelled
+// differently, and the second identical line says nothing the first did not.
+func denials(raw []permissionDenial) []Denial {
+	var out []Denial
+	seen := map[Denial]bool{}
+	for _, d := range raw {
+		in := d.ToolInput
+		target := in.FilePath
+		for _, alt := range []string{in.NotebookPath, in.Path, in.Pattern} {
+			if target == "" {
+				target = alt
+			}
+		}
+		denial := Denial{Tool: d.ToolName, Target: target}
+		if !seen[denial] {
+			seen[denial] = true
+			out = append(out, denial)
+		}
+	}
+	return out
 }
 
 func isWriteTool(name string) bool {
@@ -636,6 +684,18 @@ type streamFrame struct {
 	Result       string          `json:"result"`
 	IsError      bool            `json:"is_error"`
 	TotalCostUSD float64         `json:"total_cost_usd"`
+	// PermissionDenials is only on the result frame.
+	PermissionDenials []permissionDenial `json:"permission_denials"`
+}
+
+type permissionDenial struct {
+	ToolName  string `json:"tool_name"`
+	ToolInput struct {
+		FilePath     string `json:"file_path"`
+		NotebookPath string `json:"notebook_path"`
+		Path         string `json:"path"`
+		Pattern      string `json:"pattern"`
+	} `json:"tool_input"`
 }
 
 type assistantMessage struct {

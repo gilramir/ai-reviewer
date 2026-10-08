@@ -1,6 +1,7 @@
 module Protocol exposing
     ( Anchor
     , Conversation
+    , Denial
     , Landing
     , Message
     , Origin(..)
@@ -107,6 +108,19 @@ type ThreadStatus
 type alias Message =
     { role : Role
     , text : String
+    , denied : Array Denial
+    }
+
+
+{-| A tool call the CLI refused while the reply was being written. The reply
+itself usually says only "I couldn't read that"; this is which file, and
+`outside` says whether it lay beyond every directory Claude was given -- the
+refusal `--add-dir` lifts -- or was within reach and turned down by a rule.
+-}
+type alias Denial =
+    { tool : String
+    , target : String
+    , outside : Bool
     }
 
 
@@ -161,6 +175,7 @@ type alias Settings =
     , permissionMode : String
     , workspace : String
     , reviewRoot : String
+    , addDirs : Array String
     , branch : String
     , baseBranch : String
     , commits : Int
@@ -333,6 +348,7 @@ settingsDecoder =
             , permissionMode = paths.permissionMode
             , workspace = paths.workspace
             , reviewRoot = paths.reviewRoot
+            , addDirs = paths.addDirs
             , branch = branch.branch
             , baseBranch = branch.baseBranch
             , commits = branch.commits
@@ -369,20 +385,23 @@ toolsDecoder :
         , permissionMode : String
         , workspace : String
         , reviewRoot : String
+        , addDirs : Array String
         }
 toolsDecoder =
-    Decode.map4
-        (\tools mode workspace reviewRoot ->
+    Decode.map5
+        (\tools mode workspace reviewRoot addDirs ->
             { tools = tools
             , permissionMode = mode
             , workspace = workspace
             , reviewRoot = reviewRoot
+            , addDirs = addDirs
             }
         )
         (optionalStrings "tools")
         (optionalString "permissionMode")
         (optionalString "workspace")
         (optionalString "reviewRoot")
+        (optionalStrings "addDirs")
 
 
 {-| Where the review's commits are, and what to do with them.
@@ -568,10 +587,24 @@ anchorDecoder =
 
 messageDecoder : Decoder Message
 messageDecoder =
-    Decode.map2
-        (\role text -> { role = role, text = text })
+    Decode.map3
+        (\role text denied -> { role = role, text = text, denied = denied })
         (Decode.field "role" (Decode.map roleFromTag Decode.string))
         (Decode.field "text" Decode.string)
+        (Decode.oneOf
+            [ Decode.field "denied" (Decode.array denialDecoder)
+            , Decode.succeed []
+            ]
+        )
+
+
+denialDecoder : Decoder Denial
+denialDecoder =
+    Decode.map3
+        (\tool target outside -> { tool = tool, target = target, outside = outside })
+        (Decode.field "tool" Decode.string)
+        (optionalString "target")
+        (Decode.oneOf [ Decode.field "outside" Decode.bool, Decode.succeed False ])
 
 
 statusFromTag : String -> ThreadStatus

@@ -12,6 +12,11 @@ section it is handed -- answers with the fenced JSON array of proposals the
 critic prompt asks for. Asked to repair a misquote, it does what a real model
 would: it takes the text the daemon showed it and requotes from that. Anything
 else is answered with prose and touches nothing.
+
+A comment saying "please read PATH" reads PATH if it lies under the working
+directory or an --add-dir, and is otherwise refused the way the real CLI
+refuses it: a tool error to the model, and an entry in the result frame's
+permission_denials.
 """
 import json
 import os
@@ -107,6 +112,46 @@ def repair_reply(text):
     return "Requoted.\n\n```json\n" + json.dumps(proposals, indent=2) + "\n```\n"
 
 
+def add_dirs():
+    """The --add-dir directories this process was started with."""
+    dirs = []
+    args = sys.argv[1:]
+    for i, arg in enumerate(args):
+        if arg == "--add-dir" and i + 1 < len(args):
+            dirs.append(os.path.realpath(args[i + 1]))
+    return dirs
+
+
+def within_reach(path):
+    real = os.path.realpath(path)
+    for root in [os.path.realpath(os.getcwd())] + add_dirs():
+        if real == root or real.startswith(root + os.sep):
+            return True
+    return False
+
+
+def read_request(target):
+    """Answer "please read PATH", refusing it if it is out of reach."""
+    path = os.path.abspath(target)
+    denials = []
+    if within_reach(path):
+        with open(path, "r", encoding="utf-8") as fh:
+            reply = "It says: " + fh.read().strip()
+    else:
+        reply = "I couldn't read that file: permission was denied."
+        denials.append({"tool_name": "Read", "tool_use_id": "toolu_fake",
+                        "tool_input": {"file_path": path}})
+
+    emit({"type": "assistant", "session_id": SESSION, "message": {
+        "role": "assistant", "content": [
+            {"type": "tool_use", "name": "Read", "input": {"file_path": path}}]}})
+    emit({"type": "assistant", "session_id": SESSION, "message": {
+        "role": "assistant", "content": [{"type": "text", "text": reply}]}})
+    emit({"type": "result", "subtype": "success", "session_id": SESSION,
+          "result": reply, "is_error": False, "total_cost_usd": 0.01,
+          "permission_denials": denials})
+
+
 def handle(text):
     emit({"type": "system", "subtype": "init", "session_id": SESSION,
           "tools": ["Read", "Edit", "Write", "Grep", "Glob"], "mcp_servers": []})
@@ -126,6 +171,11 @@ def handle(text):
             "role": "assistant", "content": [{"type": "text", "text": reply}]}})
         emit({"type": "result", "subtype": "success", "session_id": SESSION,
               "result": reply, "is_error": False, "total_cost_usd": 0.01})
+        return
+
+    match = re.search(r"please read (\S+)", text)
+    if match:
+        read_request(match.group(1))
         return
 
     path, quote = parse_prompt(text)

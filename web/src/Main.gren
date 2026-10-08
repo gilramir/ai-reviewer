@@ -1167,10 +1167,10 @@ appendDelta threadId text threads =
                         }
 
                     else
-                        { thread | messages = Array.pushLast { role = Assistant, text = text } thread.messages }
+                        { thread | messages = Array.pushLast { role = Assistant, text = text, denied = [] } thread.messages }
 
                 Nothing ->
-                    { thread | messages = Array.pushLast { role = Assistant, text = text } thread.messages }
+                    { thread | messages = Array.pushLast { role = Assistant, text = text, denied = [] } thread.messages }
         )
         threads
 
@@ -1782,6 +1782,11 @@ viewSettingRows settings =
           , setting "permissions" settings.permissionMode
           , setting "claude runs in" settings.workspace
           ]
+        , if Array.isEmpty settings.addDirs then
+            []
+
+          else
+            [ setting "and may use" (String.join ", " settings.addDirs) ]
         , if settings.reviewRoot == settings.workspace then
             []
 
@@ -2794,7 +2799,50 @@ viewMessage message =
                     "msg assistant"
             )
         ]
-        [ Html.text message.text ]
+        [ Html.text message.text
+        , viewDenials message.denied
+        ]
+
+
+{-| What the CLI refused while the reply was written, and what would lift each
+refusal. The reply above it only says that something failed, and the person
+reading it is in a browser, possibly on another machine, with no other way to
+learn which path it was or whether the fix is a flag or a settings file.
+-}
+viewDenials : Array Protocol.Denial -> Html Msg
+viewDenials denials =
+    if Array.isEmpty denials then
+        Html.text ""
+
+    else
+        Html.div [ Attr.class "denied" ]
+            [ Html.div [ Attr.class "denied-head" ] [ Html.text "Claude was refused" ]
+            , Html.ul [] (Array.map viewDenial denials)
+            ]
+
+
+viewDenial : Protocol.Denial -> Html Msg
+viewDenial denial =
+    Html.li []
+        [ Html.code []
+            [ Html.text
+                (if String.isEmpty denial.target then
+                    denial.tool
+
+                 else
+                    denial.tool ++ " " ++ denial.target
+                )
+            ]
+        , Html.div [ Attr.class "denied-why" ]
+            [ Html.text
+                (if denial.outside then
+                    "Outside every directory Claude may use. Whoever runs the daemon can allow it by restarting with --add-dir and the directory."
+
+                 else
+                    "Within reach, so a permission rule turned it down: most likely a deny rule in a Claude settings.json on the machine running the daemon."
+                )
+            ]
+        ]
 
 
 viewCommitLink : String -> Html Msg

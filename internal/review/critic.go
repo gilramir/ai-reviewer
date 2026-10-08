@@ -227,6 +227,7 @@ func (r *Review) reviewSection(ctx context.Context, session *claudeproc.Session,
 	if err != nil {
 		return 0, 0, err
 	}
+	r.reportPassDenials(section.Title, result.Denials)
 
 	bad := gate.admitAll(parseProposals(result.Text))
 	lost = len(bad)
@@ -254,6 +255,28 @@ func (r *Review) reviewSection(ctx context.Context, session *claudeproc.Session,
 	}
 
 	return r.fileVetted(docPath, brief, gate.kept), lost, nil
+}
+
+// reportPassDenials tells the reviewer what a pass was refused. A pass files
+// threads rather than replying on one, so there is no message to hang the
+// refusal on, and a section reviewed without the file it leans on would
+// otherwise look like a section with nothing wrong in it.
+func (r *Review) reportPassDenials(section string, refused []claudeproc.Denial) {
+	for _, d := range r.denied(refused) {
+		r.publish(errorFrame{Type: "error", Message: denialNotice("Reviewing "+section, d)})
+	}
+}
+
+// denialNotice is a refusal as one sentence, with what would lift it.
+func denialNotice(during string, d Denial) string {
+	what := d.Tool
+	if d.Target != "" {
+		what += " " + d.Target
+	}
+	if d.Outside {
+		return fmt.Sprintf("%s, Claude was refused %s: it is outside every directory Claude may use. Restart with --add-dir to allow it.", during, what)
+	}
+	return fmt.Sprintf("%s, Claude was refused %s, probably by a deny rule in a Claude settings file.", during, what)
 }
 
 // vetted is a proposal that passed the gate: the anchor to file it under, and

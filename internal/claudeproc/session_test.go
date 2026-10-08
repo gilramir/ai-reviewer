@@ -2,6 +2,7 @@ package claudeproc
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -206,4 +207,36 @@ func TestChangingTheModelRelaunchesAndResumes(t *testing.T) {
 	assert.NotContains(t, lines[0], "--model", "first launch already had a model")
 	assert.Contains(t, lines[1], "--model sonnet", "second launch did not carry the new model")
 	assert.Contains(t, lines[1], "--resume", "second launch restarted the conversation instead of resuming")
+}
+
+// Each extra directory gets a switch of its own. --add-dir is variadic, so two
+// directories behind one switch would also work -- until a later flag's value
+// was taken for a third directory.
+func TestEachExtraDirectoryGetsItsOwnSwitch(t *testing.T) {
+	s := New(testID, Config{AddDirs: []string{"/srv/shared", "/opt/specs"}})
+	args := strings.Join(s.args(), " ")
+	assert.Contains(t, args, "--add-dir /srv/shared --add-dir /opt/specs")
+}
+
+// The refusals come off the result frame, one per tool and target however
+// many times the model retried, and named by whatever field that tool aims
+// with.
+func TestDenialsAreReadFromTheResult(t *testing.T) {
+	s := New(testID, Config{})
+	frame := streamFrame{Type: "result"}
+	require.NoError(t, json.Unmarshal([]byte(`{"type":"result","permission_denials":[
+		{"tool_name":"Read","tool_use_id":"a","tool_input":{"file_path":"/elsewhere/a.md"}},
+		{"tool_name":"Read","tool_use_id":"b","tool_input":{"file_path":"/elsewhere/a.md"}},
+		{"tool_name":"Grep","tool_use_id":"c","tool_input":{"pattern":"retry","path":"/elsewhere"}},
+		{"tool_name":"Glob","tool_use_id":"d","tool_input":{"pattern":"**/*.md"}}
+	]}`), &frame))
+
+	var result TurnResult
+	done := s.applyFrame(frame, &result, map[string]bool{}, nil)
+	require.True(t, done, "a result frame did not end the turn")
+	assert.Equal(t, []Denial{
+		{Tool: "Read", Target: "/elsewhere/a.md"},
+		{Tool: "Grep", Target: "/elsewhere"},
+		{Tool: "Glob", Target: "**/*.md"},
+	}, result.Denials)
 }

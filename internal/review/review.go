@@ -32,6 +32,10 @@ type Options struct {
 	Model        string
 	ClaudeBinary string
 	MaxBudgetUSD float64
+	// AddDirs are directories outside the workspace Claude may also use, as
+	// absolute paths. What it edits there is not committed: the history the
+	// daemon keeps is of the workspace.
+	AddDirs []string
 	// IdleTimeout and MaxLive bound how many Claude processes stay resident.
 	IdleTimeout time.Duration
 	MaxLive     int
@@ -145,6 +149,7 @@ func New(opts Options) (*Review, error) {
 			claudeproc.Config{
 				Binary:       opts.ClaudeBinary,
 				WorkDir:      hist.Root(),
+				AddDirs:      opts.AddDirs,
 				Model:        opts.Model,
 				SystemPrompt: systemPrompt,
 				MaxBudgetUSD: opts.MaxBudgetUSD,
@@ -172,6 +177,7 @@ func New(opts Options) (*Review, error) {
 		claudeproc.Config{
 			Binary:       opts.ClaudeBinary,
 			WorkDir:      hist.Root(),
+			AddDirs:      opts.AddDirs,
 			Model:        opts.Model,
 			SystemPrompt: criticSystemPrompt,
 			// No Edit and no Write. A pass that can change the document is not
@@ -639,7 +645,72 @@ func (r *Review) runTurn(threadID, docPath, prompt, subject string) {
 	if text == "" {
 		text = "(no reply)"
 	}
-	r.finishTurn(threadID, docPath, Message{Role: RoleAssistant, Text: text}, commit)
+	r.finishTurn(threadID, docPath, Message{
+		Role:   RoleAssistant,
+		Text:   text,
+		Denied: r.denied(result.Denials),
+	}, commit)
+}
+
+// denied says, of each refusal, whether the path was out of reach. That is
+// the one distinction the reviewer can act on from here: a path outside every
+// directory Claude was given needs --add-dir, and anything else was turned
+// down by a rule this daemon did not write.
+func (r *Review) denied(refused []claudeproc.Denial) []Denial {
+	if len(refused) == 0 {
+		return nil
+	}
+	roots := append([]string{r.work}, r.procs.Config().AddDirs...)
+	out := make([]Denial, 0, len(refused))
+	for _, d := range refused {
+		out = append(out, Denial{
+			Tool:    d.Tool,
+			Target:  d.Target,
+			Outside: d.Target != "" && !withinAny(r.work, d.Target, roots),
+		})
+	}
+	return out
+}
+
+// withinAny reports whether target, which may be a glob, lies under one of
+// roots. A relative target is relative to work, where the CLI runs. Symlinks
+// are resolved on a second look: the workspace comes from git, which resolves
+// them, and the model reports paths spelled however it found them.
+func withinAny(work, target string, roots []string) bool {
+	if i := strings.IndexAny(target, "*?[{"); i >= 0 {
+		target = filepath.Dir(target[:i] + "x")
+	}
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(work, target)
+	}
+	resolved := resolveExisting(target)
+	for _, root := range roots {
+		if under(root, target) || under(resolveExisting(root), resolved) {
+			return true
+		}
+	}
+	return false
+}
+
+func under(root, path string) bool {
+	rel, err := filepath.Rel(root, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, "../")
+}
+
+// resolveExisting resolves symlinks in the longest prefix of path that exists.
+// A refused Write names a file that is not there yet, and EvalSymlinks on that
+// fails outright.
+func resolveExisting(path string) string {
+	rest := ""
+	for p := filepath.Clean(path); ; p = filepath.Dir(p) {
+		if real, err := filepath.EvalSymlinks(p); err == nil {
+			return filepath.Join(real, rest)
+		}
+		if filepath.Dir(p) == p {
+			return path
+		}
+		rest = filepath.Join(filepath.Base(p), rest)
+	}
 }
 
 // record commits whatever the turn changed. A turn that only answered a

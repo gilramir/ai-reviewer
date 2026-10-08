@@ -45,7 +45,9 @@ type Settings struct {
 	// They differ whenever a review is rooted inside a repository.
 	Workspace  string `json:"workspace"`
 	ReviewRoot string `json:"reviewRoot"`
-	Branch     string `json:"branch"`
+	// AddDirs are the directories beyond the workspace Claude may use.
+	AddDirs []string `json:"addDirs"`
+	Branch  string   `json:"branch"`
 	// BaseBranch is where the review's commits are waiting to go, and Commits
 	// is how many are waiting. The count is against the base rather than a
 	// tally the daemon keeps, so it goes to zero on its own once they have been
@@ -129,6 +131,7 @@ func (r *Review) Settings() Settings {
 		Brief:          r.Brief(),
 		PermissionMode: claudeproc.PermissionMode,
 		Workspace:      r.work,
+		AddDirs:        cfg.AddDirs,
 		ReviewRoot:     r.root,
 		Branch:         r.branch,
 		MaxBudgetUSD:   cfg.MaxBudgetUSD,

@@ -251,6 +251,9 @@ The password is not in there. It is a digest in
   read the sources a document links to. That is also its reach: it can edit
   anything in the repository, the same as when you run `claude` there yourself.
   The browser can still only open what is under `--root`.
+- Anything outside the repository is refused, and the refusal is shown under
+  the reply that ran into it. `serve --add-dir DIR` (repeatable) lets Claude
+  read and edit DIR as well. Its edits there are not committed.
 - WebSocket upgrades require a matching `Origin`, so a page you visit while
   logged in cannot drive Claude against your documents.
 

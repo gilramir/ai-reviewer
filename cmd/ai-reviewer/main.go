@@ -48,6 +48,7 @@ type serveOptions struct {
 	NoAuth        bool
 	Model         string
 	Claude        string
+	AddDir        []string
 	MaxBudgetUsd  float64
 	IdleTimeout   time.Duration
 	MaxLive       int
@@ -147,6 +148,12 @@ func addServeCommand(ap *argparse.ArgumentParser) {
 		Help:     "Path to the claude executable",
 	})
 	cmd.Add(&argparse.Argument{
+		Switches: []string{"--add-dir"},
+		MetaVar:  "DIR",
+		Help: "Also let claude read and edit DIR, outside the repository; " +
+			"may be repeated. Edits there are not committed",
+	})
+	cmd.Add(&argparse.Argument{
 		Switches: []string{"--max-budget-usd"},
 		MetaVar:  "AMOUNT",
 		Help:     "Per-process spend cap; 0 for none",
@@ -224,6 +231,11 @@ func runServe(_ *argparse.Command, values argparse.Values) error {
 		return fmt.Errorf("cannot find the claude executable %q: %w", opts.Claude, err)
 	}
 
+	addDirs, err := extraDirs(opts.AddDir)
+	if err != nil {
+		return err
+	}
+
 	branchName, err := resolveBranch(opts.Root, opts.Branch)
 	if err != nil {
 		return err
@@ -245,6 +257,7 @@ func runServe(_ *argparse.Command, values argparse.Values) error {
 		Branch:       branchName,
 		Model:        opts.Model,
 		ClaudeBinary: opts.Claude,
+		AddDirs:      addDirs,
 		MaxBudgetUSD: opts.MaxBudgetUsd,
 		IdleTimeout:  opts.IdleTimeout,
 		MaxLive:      opts.MaxLive,
@@ -275,7 +288,7 @@ func runServe(_ *argparse.Command, values argparse.Values) error {
 		}
 	}()
 
-	announce(listen, branchName, rev.Root(), rev.WorkRoot(), secret, auth == nil)
+	announce(listen, branchName, rev.Root(), rev.WorkRoot(), addDirs, secret, auth == nil)
 	if logPath != "" {
 		fmt.Printf("    claude log %s\n      read it  ai-reviewer log-view %s\n\n", logPath, logPath)
 	}
@@ -418,7 +431,7 @@ func buildAuth(disabled bool) (*server.Auth, string, error) {
 	return server.NewTokenAuth(secret), secret, nil
 }
 
-func announce(listen, branch, root, workRoot, secret string, noAuth bool) {
+func announce(listen, branch, root, workRoot string, addDirs []string, secret string, noAuth bool) {
 	fmt.Printf("\n  ai-reviewer\n\n")
 	fmt.Printf("    reviewing  %s\n", root)
 	// Claude runs at the repository root so it can read what the documents
@@ -426,6 +439,9 @@ func announce(listen, branch, root, workRoot, secret string, noAuth bool) {
 	// whenever the two differ rather than leaving it to be discovered.
 	if workRoot != "" && workRoot != root {
 		fmt.Printf("    claude in  %s\n", workRoot)
+	}
+	for _, dir := range addDirs {
+		fmt.Printf("    add-dir    %s\n", dir)
 	}
 	if branch != "" {
 		fmt.Printf("    branch     %s\n", branch)
@@ -441,6 +457,31 @@ func announce(listen, branch, root, workRoot, secret string, noAuth bool) {
 		fmt.Printf("    password   (the one you set with `ai-reviewer password`)\n")
 	}
 	fmt.Println()
+}
+
+// extraDirs makes each --add-dir absolute and checks it is a directory.
+//
+// Absolute because claude runs at the repository root and would resolve a
+// relative path from there, not from where it was typed. Checked here because
+// the CLI says nothing about a directory that does not exist: the reviewer
+// would find out from the first refusal, in the browser, much later.
+func extraDirs(dirs []string) ([]string, error) {
+	out := make([]string, 0, len(dirs))
+	for _, dir := range dirs {
+		abs, err := filepath.Abs(dir)
+		if err != nil {
+			return nil, err
+		}
+		info, err := os.Stat(abs)
+		if err != nil {
+			return nil, fmt.Errorf("--add-dir: %w", err)
+		}
+		if !info.IsDir() {
+			return nil, fmt.Errorf("--add-dir: %s is not a directory", abs)
+		}
+		out = append(out, abs)
+	}
+	return out, nil
 }
 
 // landing says how to merge the review branch, printed as the daemon stops.

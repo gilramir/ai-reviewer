@@ -94,6 +94,7 @@ func (m *Manager) Config() Config {
 
 	out := m.cfg
 	out.AllowedTools = append([]string(nil), m.cfg.AllowedTools...)
+	out.AddDirs = append([]string(nil), m.cfg.AddDirs...)
 	return out
 }
 

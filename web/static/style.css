@@ -758,3 +758,21 @@ button.icon svg { flex-shrink: 0; }
   .composer { right: 1rem; left: 1rem; width: auto; }
   .briefing { right: 1rem; left: 1rem; width: auto; }
 }
+
+/* What the CLI refused while writing a reply. Sits inside the reply it
+   explains, set in the UI face rather than the reply's prose, since it is the
+   daemon talking and not the model. */
+.msg .denied {
+  margin-top: 0.5rem;
+  padding: 0.4rem 0.5rem;
+  border-left: 3px solid var(--danger);
+  background: var(--paper);
+  border-radius: 0 4px 4px 0;
+  white-space: normal;
+  font: 0.8125rem/1.45 system-ui, sans-serif;
+}
+.msg .denied-head { color: var(--danger); font-weight: 600; }
+.msg .denied ul { margin: 0.25rem 0 0; padding-left: 1.1rem; }
+.msg .denied li + li { margin-top: 0.35rem; }
+.msg .denied code { font-family: var(--mono); font-size: 0.75rem; overflow-wrap: anywhere; }
+.msg .denied-why { color: var(--muted); }

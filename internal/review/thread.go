@@ -45,6 +45,22 @@ const (
 type Message struct {
 	Role Role   `json:"role"`
 	Text string `json:"text"`
+	// Denied is what the CLI refused to let the model do while writing this
+	// reply. It is kept on the message rather than sent once as a notice,
+	// because the reply it explains -- "I couldn't read that file" -- stays on
+	// screen, and the explanation has to stay beside it.
+	Denied []Denial `json:"denied,omitempty"`
+}
+
+// Denial is one tool call the CLI refused.
+type Denial struct {
+	Tool   string `json:"tool"`
+	Target string `json:"target,omitempty"`
+	// Outside says the target lies beyond every directory Claude was started
+	// with, which is the refusal --add-dir fixes. When it is false the path was
+	// within reach and something else said no: a deny rule in a settings file,
+	// most likely, and no flag of this daemon's can overrule that.
+	Outside bool `json:"outside,omitempty"`
 }
 
 // Thread is a comment and everything that followed from it.
@@ -91,5 +107,7 @@ func (t *Thread) AwaitsReviewer() bool {
 func (t *Thread) clone() *Thread {
 	out := *t
 	out.Messages = append([]Message(nil), t.Messages...)
+	// Denied is not copied: a message's refusals are set once, when the
+	// message is made, and never changed after.
 	return &out
 }
