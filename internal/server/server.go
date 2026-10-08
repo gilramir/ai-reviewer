@@ -37,11 +37,13 @@ type Options struct {
 type Server struct {
 	opts Options
 	mux  *http.ServeMux
+	// open is what the login button says it opens.
+	open string
 }
 
 // New builds the router.
 func New(opts Options) *Server {
-	s := &Server{opts: opts, mux: http.NewServeMux()}
+	s := &Server{opts: opts, mux: http.NewServeMux(), open: "review"}
 
 	s.mux.HandleFunc("/favicon.ico", s.handleFavicon)
 	s.mux.HandleFunc("/login", s.handleLogin)
@@ -53,6 +55,19 @@ func New(opts Options) *Server {
 	s.mux.Handle(review.AssetRoute, s.protect(http.HandlerFunc(s.handleFile)))
 	s.mux.Handle("/", s.protect(http.HandlerFunc(s.handleIndex)))
 
+	return s
+}
+
+// Gate puts the review's login in front of another handler: the same password,
+// the same lockout and the same page, so a second thing served on the LAN is
+// not a second, weaker way in. Everything but the login itself, the logout and
+// the icon goes through it. open names what the login button opens.
+func Gate(auth *Auth, open string, next http.Handler) http.Handler {
+	s := &Server{opts: Options{Auth: auth}, mux: http.NewServeMux(), open: open}
+	s.mux.HandleFunc("/favicon.ico", s.handleFavicon)
+	s.mux.HandleFunc("/login", s.handleLogin)
+	s.mux.HandleFunc("/logout", s.handleLogout)
+	s.mux.Handle("/", s.protect(next))
 	return s
 }
 
@@ -68,7 +83,10 @@ func (s *Server) protect(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if r.Header.Get("Upgrade") != "" {
+		// A redirect is an answer for a person. A WebSocket handshake cannot
+		// follow one, and a fetch follows it to a login page it then fails to
+		// decode as JSON, which reads as a bug rather than a logout.
+		if r.Header.Get("Upgrade") != "" || strings.HasPrefix(r.URL.Path, "/api/") {
 			http.Error(w, "unauthorised", http.StatusUnauthorized)
 			return
 		}
@@ -176,10 +194,12 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	name := sessionCookie
 	if s.opts.Auth != nil {
 		s.opts.Auth.Revoke(r)
+		name = s.opts.Auth.cookie
 	}
-	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Path: "/", MaxAge: -1})
+	http.SetCookie(w, &http.Cookie{Name: name, Path: "/", MaxAge: -1})
 	http.Redirect(w, r, "/login", http.StatusSeeOther)
 }
 
@@ -229,14 +249,14 @@ try {
   {{if .Error}}<p class="err">{{.Error}}</p>{{end}}
   <input type="password" name="password" placeholder="Password" autofocus
          autocomplete="current-password">
-  <button type="submit">Open review</button>
+  <button type="submit">Open {{.Open}}</button>
 </form>
 `))
 
 func (s *Server) renderLogin(w http.ResponseWriter, message string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	_ = loginPage.Execute(w, struct{ Error string }{message})
+	_ = loginPage.Execute(w, struct{ Error, Open string }{message, s.open})
 }
 
 // --- origin checking --------------------------------------------------------

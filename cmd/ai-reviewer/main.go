@@ -58,13 +58,18 @@ type serveOptions struct {
 
 // logViewOptions holds the flags for the log-view subcommand.
 type logViewOptions struct {
-	File   string
-	Listen string
+	File      string
+	Listen    string
+	ListenAll string
 }
 
 // defaultLogListen sits beside the review's own default port, so a review and
 // its log can be open at once without either flag.
 const defaultLogListen = "127.0.0.1:8081"
+
+// logCookie is the log viewer's session cookie, kept apart from the review's;
+// see Auth.WithCookie.
+const logCookie = "ai_reviewer_log_session"
 
 // defaultLogName is where --claude-log writes: beside the review's state, which
 // is already kept out of the repository.
@@ -199,7 +204,12 @@ func addLogViewCommand(ap *argparse.ArgumentParser) {
 	cmd.Add(&argparse.Argument{
 		Switches: []string{"--listen"},
 		MetaVar:  "ADDR",
-		Help:     "Address to bind; loopback only",
+		Help:     "Address to bind; a password is asked for unless it is loopback",
+	})
+	cmd.Add(&argparse.Argument{
+		Switches: []string{"--listen-all"},
+		MetaVar:  "PORT",
+		Help:     "Reach it from the LAN: shorthand for --listen 0.0.0.0:PORT",
 	})
 }
 
@@ -215,7 +225,7 @@ func addPasswordCommand(ap *argparse.ArgumentParser) {
 func runServe(_ *argparse.Command, values argparse.Values) error {
 	opts := values.(*serveOptions)
 
-	listen, err := listenAddress(opts.Listen, opts.ListenAll)
+	listen, err := listenAddress(opts.Listen, defaultListen, opts.ListenAll)
 	if err != nil {
 		return err
 	}
@@ -350,8 +360,9 @@ func openClaudeLog(root, path string) (*wirelog.Log, string, error) {
 func runLogView(_ *argparse.Command, values argparse.Values) error {
 	opts := values.(*logViewOptions)
 
-	if !server.IsLoopback(opts.Listen) {
-		return fmt.Errorf("log-view serves without a password, so only on a loopback address; %q is reachable from the network. Use an SSH tunnel to read it from elsewhere", opts.Listen)
+	listen, err := listenAddress(opts.Listen, defaultLogListen, opts.ListenAll)
+	if err != nil {
+		return err
 	}
 
 	log, err := wirelog.OpenReader(opts.File)
@@ -360,9 +371,24 @@ func runLogView(_ *argparse.Command, values argparse.Values) error {
 	}
 	defer log.Close()
 
+	// The log holds every prompt and every file the model read, which is more
+	// than the review itself shows, so anywhere off this machine it is behind
+	// the review's own password. On loopback it is not: whoever can reach it
+	// there can already read the file.
+	handler := logview.Handler(log)
+	var auth *server.Auth
+	var secret string
+	if !server.IsLoopback(listen) {
+		auth, secret, err = buildAuth(false)
+		if err != nil {
+			return err
+		}
+		handler = server.Gate(auth.WithCookie(logCookie), "log", handler)
+	}
+
 	httpServer := &http.Server{
-		Addr:              opts.Listen,
-		Handler:           logview.Handler(log),
+		Addr:              listen,
+		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -375,7 +401,11 @@ func runLogView(_ *argparse.Command, values argparse.Values) error {
 		_ = httpServer.Shutdown(shutdown)
 	}()
 
-	fmt.Printf("\n  ai-reviewer log-view\n\n    reading  %s\n    open     %s\n\n", opts.File, server.DisplayURL(opts.Listen, false))
+	fmt.Printf("\n  ai-reviewer log-view\n\n    reading    %s\n    open       %s\n", opts.File, server.DisplayURL(listen, false))
+	if auth != nil {
+		printPassword(secret, false)
+	}
+	fmt.Println()
 
 	if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
@@ -389,11 +419,14 @@ func runLogView(_ *argparse.Command, values argparse.Values) error {
 // 0.0.0.0:PORT, and typing it correctly matters: a typo in the host half is
 // either a bind error or, worse, a daemon listening somewhere other than where
 // they think. A port on its own cannot be mistyped into a different meaning.
-func listenAddress(listen, listenAll string) (string, error) {
+//
+// fallback is the command's own default for --listen, which is how a --listen
+// left alone is told from one set on purpose.
+func listenAddress(listen, fallback, listenAll string) (string, error) {
 	if listenAll == "" {
 		return listen, nil
 	}
-	if listen != defaultListen {
+	if listen != fallback {
 		return "", fmt.Errorf("--listen %q and --listen-all %q both name an address; pass one of them", listen, listenAll)
 	}
 
@@ -447,7 +480,11 @@ func announce(listen, branch, root, workRoot string, addDirs []string, secret st
 		fmt.Printf("    branch     %s\n", branch)
 	}
 	fmt.Printf("    open       %s\n", server.DisplayURL(listen, false))
+	printPassword(secret, noAuth)
+	fmt.Println()
+}
 
+func printPassword(secret string, noAuth bool) {
 	switch {
 	case noAuth:
 		fmt.Printf("    password   (disabled; loopback only)\n")
@@ -456,7 +493,6 @@ func announce(listen, branch, root, workRoot string, addDirs []string, secret st
 	default:
 		fmt.Printf("    password   (the one you set with `ai-reviewer password`)\n")
 	}
-	fmt.Println()
 }
 
 // extraDirs makes each --add-dir absolute and checks it is a directory.

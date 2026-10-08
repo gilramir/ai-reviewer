@@ -242,8 +242,12 @@ reply to attach a refusal to, so it reports each one as an error notice.
 
 The wire log (`serve --claude-log`) holds every prompt and every file the model
 read, which is more than the review exposes, so it is treated as more
-sensitive: the file is created `0600`, and `log-view` has no password and
-refuses any address but loopback. Read it from elsewhere through an SSH tunnel.
+sensitive: the file is created `0600`, and `log-view` serves it without a
+password only on loopback. On any other address (`--listen-all PORT`, or a
+`--listen` that is not loopback) it sits behind `server.Gate`, the review's own
+login with the same password, lockout and page. That gate uses its own session
+cookie: cookies are scoped to a host and not a port, so a shared name would
+mean logging in to the log on :8081 logs you out of the review on :8080.
 Before a frame is written, anything shaped like an API key (`sk-ant-…`,
 `sk-…`, `sk-proj-…`, `Bearer …`) is replaced, along with the string value of
 any JSON member named like a credential (`api_key`, `token`, `password`,

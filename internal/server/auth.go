@@ -25,6 +25,8 @@ type Auth struct {
 	// hash is a stored argon2id digest when the user configured a persistent
 	// password instead.
 	hash *passwordHash
+	// cookie is the name the session travels under.
+	cookie string
 
 	mu        sync.Mutex
 	sessions  map[string]time.Time
@@ -44,7 +46,7 @@ const (
 
 // NewTokenAuth authenticates against a one-run secret.
 func NewTokenAuth(secret string) *Auth {
-	return &Auth{secret: secret, sessions: map[string]time.Time{}}
+	return &Auth{secret: secret, cookie: sessionCookie, sessions: map[string]time.Time{}}
 }
 
 // NewPasswordAuth authenticates against a stored argon2id digest.
@@ -53,7 +55,18 @@ func NewPasswordAuth(encoded string) (*Auth, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Auth{hash: h, sessions: map[string]time.Time{}}, nil
+	return &Auth{hash: h, cookie: sessionCookie, sessions: map[string]time.Time{}}, nil
+}
+
+// WithCookie names the session cookie something other than the review's.
+//
+// Cookies are scoped to a host, not a port, so the review on :8080 and the log
+// viewer on :8081 share a cookie jar. Under one name, logging in to either
+// overwrites the other's session, and the review logs you out the moment you
+// open its log.
+func (a *Auth) WithCookie(name string) *Auth {
+	a.cookie = name
+	return a
 }
 
 // Check verifies a submitted password in constant time, applying a lockout so a
@@ -106,7 +119,7 @@ func (a *Auth) Issue(overTLS bool) *http.Cookie {
 	a.mu.Unlock()
 
 	return &http.Cookie{
-		Name:     sessionCookie,
+		Name:     a.cookie,
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
@@ -118,7 +131,7 @@ func (a *Auth) Issue(overTLS bool) *http.Cookie {
 
 // Authenticated reports whether a request carries a live session.
 func (a *Auth) Authenticated(r *http.Request) bool {
-	cookie, err := r.Cookie(sessionCookie)
+	cookie, err := r.Cookie(a.cookie)
 	if err != nil || cookie.Value == "" {
 		return false
 	}
@@ -138,7 +151,7 @@ func (a *Auth) Authenticated(r *http.Request) bool {
 
 // Revoke drops a request's session.
 func (a *Auth) Revoke(r *http.Request) {
-	cookie, err := r.Cookie(sessionCookie)
+	cookie, err := r.Cookie(a.cookie)
 	if err != nil {
 		return
 	}

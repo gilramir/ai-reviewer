@@ -34,7 +34,7 @@ func TestListenAddress(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := listenAddress(tt.listen, tt.listenAll)
+			got, err := listenAddress(tt.listen, defaultListen, tt.listenAll)
 			if tt.wantErr {
 				require.Error(t, err, "listenAddress(%q, %q) = %q", tt.listen, tt.listenAll, got)
 				return
@@ -45,10 +45,22 @@ func TestListenAddress(t *testing.T) {
 	}
 }
 
+// log-view has a default address of its own, and --listen-all has to be
+// measured against that one: against serve's it would read every bare
+// --listen-all as clashing with a --listen nobody passed.
+func TestLogViewListenAll(t *testing.T) {
+	got, err := listenAddress(defaultLogListen, defaultLogListen, "9001")
+	require.NoError(t, err)
+	assert.Equal(t, "0.0.0.0:9001", got)
+
+	_, err = listenAddress("127.0.0.1:9002", defaultLogListen, "9001")
+	assert.Error(t, err, "--listen and --listen-all together were accepted")
+}
+
 // The flag is only worth anything if what it produces is what the auth check
 // reads as "reachable from the network".
 func TestListenAllIsNotLoopback(t *testing.T) {
-	addr, err := listenAddress(defaultListen, "8080")
+	addr, err := listenAddress(defaultListen, defaultListen, "8080")
 	require.NoError(t, err)
 	assert.False(t, server.IsLoopback(addr), "%q reads as loopback, so --no-auth would be allowed with it", addr)
 }

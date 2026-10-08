@@ -74,7 +74,8 @@ ai-reviewer log-view .ai-reviewer/claude.db
 
 serves a page for reading it on `127.0.0.1:8081`: one frame per line above, the
 selected one as a JSON tree below. The log holds every file the model read, so
-it is readable by you alone and the viewer listens on loopback only.
+it is readable by you alone. `log-view --listen-all PORT` serves it to the LAN,
+behind the same password as the review.
 
 ## Reviewing
 
